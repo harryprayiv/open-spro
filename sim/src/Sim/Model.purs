@@ -44,6 +44,9 @@ type State =
   , stepOpen :: Int
   -- The group of parameters the settings show.
   , paramGroup :: Group
+  -- The note on the coffee map the barista is after, counted round the
+  -- wheel from jasmine.
+  , wanted :: Maybe Int
   -- What the present recipe would do on the present machine. It is
   -- worked out again whenever the recipe, a shape or a parameter
   -- changes, and not on every frame.

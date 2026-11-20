@@ -5,19 +5,21 @@ module Test.Main (main) where
 
 import Prelude
 
-import Data.Array (drop, last, length, zipWith)
+import Data.Array (drop, last, length, take, zipWith)
 import Data.Array.NonEmpty (toArray)
 import Data.Either (Either(..), isLeft, isRight)
 import Data.Foldable (and, foldl, for_, maximum)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Number (abs)
 import Data.Number.Format (fixed, toStringWith)
+import Data.String (joinWith)
 import Effect (Effect)
 import Effect.Console (log)
 import Effect.Exception (throw)
 import Sim.Controller (Event(..), shotInProgress)
 import Sim.Cup as Cup
 import Sim.Curve as Curve
+import Sim.Flavor as Flavor
 import Sim.Forecast (forecast)
 import Sim.Params as Params
 import Sim.Profiles as Profiles
@@ -348,8 +350,37 @@ beans = do
   where
   plainRecipe = { name: "", roaster: "", roastedOn: "", roast: Recipe.FullCity, profileIndex: 0, doseG: 18.0, ratio: 2.0, tempC: 93.0, seconds: 28.0, paced: true, grind: 0.0 }
 
+-- | The coffee map: a light roast lands among flowers, citrus and
+-- | fruit, a dark one among cocoa, spice and roast, extraction moves a
+-- | cup clockwise, and the route to a wanted note says the right thing.
+coffeeMap :: Effect Unit
+coffeeMap = do
+  log "The coffee map"
+  let top roast extracted = map _.name (take 3 (Flavor.expected roast extracted))
+  for_ Recipe.roasts \roast ->
+    log ("  " <> Recipe.roastLabel roast <> ", balanced: " <> joinWith ", " (top roast 0.675))
+  expect "a City roast leads with a citrus or fruit note" (Flavor.place Recipe.City 0.675 > 3.0 / 24.0 && Flavor.place Recipe.City 0.675 < 9.0 / 24.0)
+  expect "a Full City roast lands among the sweet and nut notes" (Flavor.place Recipe.FullCity 0.675 > 9.0 / 24.0 && Flavor.place Recipe.FullCity 0.675 < 15.0 / 24.0)
+  expect "a French roast lands among cocoa, spice and roast" (Flavor.place Recipe.French 0.675 > 15.0 / 24.0)
+  expect "a darker roast never lands lighter" (and (zipWith (\a b -> Flavor.place a 0.675 <= Flavor.place b 0.675) Recipe.roasts (drop 1 Recipe.roasts)))
+  expect "extracting more moves the cup towards the dark side" (Flavor.place Recipe.FullCity 0.75 > Flavor.place Recipe.FullCity 0.60)
+  let is found wanted = case found, wanted of
+        Flavor.Already, "already" -> true
+        Flavor.ExtractMore, "more" -> true
+        Flavor.ExtractLess, "less" -> true
+        Flavor.OtherRoast _ _, "other" -> true
+        _, _ -> false
+  expect "a note the cup shows is already there" (is (Flavor.route Recipe.FullCity 0.675 13) "already")
+  expect "a note just clockwise is reached by extracting more" (is (Flavor.route Recipe.FullCity 0.675 14) "more")
+  expect "a note just anticlockwise is reached by extracting less" (is (Flavor.route Recipe.FullCity 0.675 11) "less")
+  expect "jasmine is out of reach for a French roast, and a lighter roast is named"
+    (case Flavor.route Recipe.French 0.675 0 of
+      Flavor.OtherRoast other _ -> Recipe.development other < 0.2
+      _ -> false)
+
 main :: Effect Unit
 main = do
+  coffeeMap
   beans
   curveShapes
   shapes

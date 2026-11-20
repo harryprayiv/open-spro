@@ -5,269 +5,210 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Espresso simulator</title>
     <style>
-      /* Textures live in sim/imgs/textures. Every textured surface also has
-         a plain colour, so a missing image costs the look and nothing else. */
+      /* The design language of the kissaten press packet: flat paper and
+         ink, square keys, 2px rules in deep green, burnt orange for the
+         one thing that matters, numbered mono labels, and the textures
+         kept to photo slots. Fonts are named and never fetched: IBM Plex
+         Mono, Zen Kaku Gothic New and Shippori Mincho are used when the
+         system has them. */
       * { box-sizing: border-box; }
-      body { margin: 0; background: #14110f; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+      body { margin: 0; background: #17120f; font-family: "Zen Kaku Gothic New", "Noto Sans JP", "Helvetica Neue", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
 
       .theme-day {
-        --ink: #2a1f17; --muted: #6e5d4f; --line: rgba(60, 40, 20, 0.16);
-        --card: rgba(250, 245, 236, 0.84); --card-edge: rgba(255, 255, 255, 0.6);
-        --shadow: 0 12px 30px rgba(40, 20, 5, 0.32);
-        --room: #8a5a36; --room-image: url("../imgs/textures/woodPanel01.png");
-        --room-tint: linear-gradient(rgba(255, 236, 205, 0.10), rgba(50, 25, 8, 0.30));
-        --key-tint: linear-gradient(rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.18));
-        --key-ink: #241a12; --field: rgba(255, 255, 255, 0.72); --paper: #fbf7ee;
-        --brass: #a8843f; --brass-ink: #2b1d08;
+        --paper: #f4eedf; --card: #ffffff; --ink: #17120f; --muted: #625a50; --faint: #9c948a;
+        --rule: #264a3a; --green: #4d8a60; --sage: #9fbba6; --orange: #e88a22; --burnt: #bc6a14; --gold: #c9a24a;
+        --key: #ffffff; --key-ink: #17120f; --on: #264a3a; --on-ink: #ffffff; --line: rgba(23, 18, 15, 0.14);
+        --bad: #b3261e;
       }
       .theme-night {
-        --ink: #efe6d8; --muted: #b6a792; --line: rgba(255, 230, 190, 0.14);
-        --card: rgba(24, 20, 18, 0.76); --card-edge: rgba(255, 214, 150, 0.14);
-        --shadow: 0 16px 36px rgba(0, 0, 0, 0.65);
-        --room: #14110f; --room-image: url("../imgs/textures/sugsugiBan.png");
-        --room-tint: linear-gradient(rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.62));
-        --key-tint: linear-gradient(rgba(40, 34, 30, 0.62), rgba(12, 10, 9, 0.80));
-        --key-ink: #f1e7d6; --field: rgba(0, 0, 0, 0.38); --paper: #efe6d2;
-        --brass: #d0a65a; --brass-ink: #2b1d08;
+        --paper: #17120f; --card: #211a15; --ink: #f4eedf; --muted: #b9b0a3; --faint: #8a8176;
+        --rule: #9fbba6; --green: #4d8a60; --sage: #9fbba6; --orange: #e88a22; --burnt: #e88a22; --gold: #c9a24a;
+        --key: #211a15; --key-ink: #f4eedf; --on: #4d8a60; --on-ink: #ffffff; --line: rgba(244, 238, 223, 0.16);
+        --bad: #ff7b70;
       }
 
       /* The page is exactly one screen tall. Panes scroll inside themselves. */
-      .page {
-        height: 100vh; display: flex; flex-direction: column; color: var(--ink);
-        background-color: var(--room);
-        background-image: var(--room-tint), var(--room-image);
-        background-size: cover; background-position: center;
-        transition: color 0.3s ease;
-      }
+      .page { height: 100vh; display: flex; flex-direction: column; color: var(--ink); background: var(--paper); transition: background 0.3s ease, color 0.3s ease; }
 
-      /* Top bar: a concrete lintel with a brass nameplate. */
+      /* Top bar: ink, with the name set in Mincho and a blossom from the vine. */
       .top {
-        flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.8rem;
-        padding: 0.6rem 1rem;
-        background-color: #55524d;
-        background-image: linear-gradient(rgba(0, 0, 0, 0.30), rgba(0, 0, 0, 0.55)), url("../imgs/textures/brutalistWall.png");
-        background-size: cover; background-position: center;
-        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+        flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem;
+        padding: 0.55rem 1rem 0.55rem 3.4rem; background-color: #17120f; color: #f4eedf;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-30 -30 60 60'%3E%3Cg fill='%23E88A22'%3E%3Cellipse cx='13' rx='13' ry='6.3'/%3E%3Cellipse cx='13' rx='13' ry='6.3' transform='rotate(60)'/%3E%3Cellipse cx='13' rx='13' ry='6.3' transform='rotate(120)'/%3E%3Cellipse cx='13' rx='13' ry='6.3' transform='rotate(180)'/%3E%3Cellipse cx='13' rx='13' ry='6.3' transform='rotate(240)'/%3E%3Cellipse cx='13' rx='13' ry='6.3' transform='rotate(300)'/%3E%3C/g%3E%3Ccircle r='5.5' fill='%23C9A24A'/%3E%3C/svg%3E");
+        background-repeat: no-repeat; background-position: 0.8rem center; background-size: 2rem;
+        border-bottom: 2px solid #264a3a;
       }
-      .plate {
-        margin: 0; padding: 0.4rem 1.4rem; border-radius: 6px;
-        font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-        font-size: 1rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase;
-        color: #2b1d08; text-shadow: 0 1px 0 rgba(255, 240, 200, 0.55);
-        background-color: #b08d57;
-        background-image: linear-gradient(rgba(255, 240, 200, 0.40), rgba(80, 50, 0, 0.22)), url("../imgs/textures/brushedBrass.png");
-        background-size: auto, 260px;
-        box-shadow: inset 0 0 0 1px rgba(255, 240, 200, 0.45), inset 0 -2px 5px rgba(0, 0, 0, 0.35), 0 2px 7px rgba(0, 0, 0, 0.6);
-      }
-      .chip {
-        padding: 0.22rem 0.7rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600;
-        color: #f1e7d6; background: rgba(0, 0, 0, 0.42); border: 1px solid rgba(255, 230, 190, 0.18);
-        font-variant-numeric: tabular-nums;
-      }
-      .chip.state-ready { background: #2f8f55; border-color: #7be0a0; }
-      .chip.state-heating { background: #a86a14; border-color: #f2b45a; }
-      .chip.state-faulted { background: #d32f2f; border-color: #ff9d94; }
-      .notice { flex: 1; min-width: 8rem; color: #ffb4ab; font-weight: 600; font-size: 0.9rem; }
+      .plate { margin: 0; font-family: "Shippori Mincho", "Noto Serif JP", "Iowan Old Style", Georgia, serif; font-size: 1.3rem; font-weight: 700; letter-spacing: 0.02em; }
+      .chip { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.72rem; letter-spacing: 0.14em; text-transform: uppercase; padding: 0.2rem 0.6rem; border: 2px solid #9fbba6; color: #f4eedf; font-variant-numeric: tabular-nums; }
+      .chip.state-ready { background: #4d8a60; border-color: #4d8a60; }
+      .chip.state-heating { background: #bc6a14; border-color: #bc6a14; }
+      .chip.state-faulted { background: #b3261e; border-color: #b3261e; }
+      .notice { flex: 1; min-width: 8rem; color: #e88a22; font-weight: 700; font-size: 0.88rem; }
+      .alarm, .theme-night .alarm { background: #b3261e; border-color: #b3261e; color: #ffffff; }
 
-      /* Day and night switch: a brass knob in an aluminium track. */
-      .theme-switch {
-        position: relative; width: 6.4rem; height: 2.1rem; padding: 0; border-radius: 1.05rem; cursor: pointer;
-        border: 1px solid rgba(0, 0, 0, 0.6);
-        background-color: #9aa0a6;
-        background-image: linear-gradient(rgba(0, 0, 0, 0.42), rgba(255, 255, 255, 0.10)), url("../imgs/textures/bushedAlum.png");
-        background-size: auto, 200px;
-        box-shadow: inset 0 3px 6px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.25);
-      }
-      .theme-switch .sun, .theme-switch .moon {
-        position: absolute; top: 0; line-height: 2rem; font-size: 0.62rem; font-weight: 700;
-        letter-spacing: 0.12em; text-transform: uppercase; color: rgba(255, 255, 255, 0.82);
-      }
-      .theme-switch .sun { right: 0.7rem; }
-      .theme-switch .moon { left: 0.6rem; opacity: 0; }
+      /* Day and night: a square track and a blossom-orange block. */
+      .theme-switch { position: relative; width: 6.6rem; height: 2rem; padding: 0; background: #17120f; border: 2px solid #9fbba6; }
+      .theme-switch .sun, .theme-switch .moon { position: absolute; top: 0; line-height: 1.75rem; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.66rem; letter-spacing: 0.18em; text-transform: uppercase; color: #f4eedf; }
+      .theme-switch .sun { right: 0.6rem; }
+      .theme-switch .moon { left: 0.5rem; opacity: 0; }
       .theme-switch.night .sun { opacity: 0; }
       .theme-switch.night .moon { opacity: 1; }
-      .theme-switch .knob {
-        position: absolute; top: 0.16rem; left: 0.18rem; width: 1.7rem; height: 1.7rem; border-radius: 50%;
-        background-color: #b08d57;
-        background-image: radial-gradient(circle at 34% 28%, rgba(255, 250, 230, 0.85), rgba(255, 250, 230, 0) 46%), url("../imgs/textures/brushedBrass.png");
-        background-size: auto, 120px;
-        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.65), inset 0 -2px 3px rgba(0, 0, 0, 0.35);
-        transition: transform 0.38s cubic-bezier(0.3, 1.45, 0.5, 1);
-      }
-      .theme-switch.night .knob { transform: translateX(4.2rem); }
+      .theme-switch .knob { position: absolute; top: 0.2rem; left: 0.2rem; width: 1.35rem; height: 1.35rem; background: #e88a22; transition: transform 0.3s ease; }
+      .theme-switch.night .knob { transform: translateX(4.6rem); background: #c9a24a; }
 
-      .alarm {
-        color: #fff; border-color: #ff9d94; border-radius: 999px; padding: 0.22rem 0.8rem;
-        background: #d32f2f; box-shadow: 0 0 14px rgba(255, 60, 40, 0.65);
-      }
-      .problems {
-        margin: 0 0 0.4rem; padding: 0.5rem 0.8rem 0.5rem 1.7rem; border-radius: 10px;
-        background: rgba(211, 47, 47, 0.92); color: #fff; font-weight: 600; font-size: 0.88rem;
-      }
-      .bad, .bad th, .bad td { color: #e5392f; font-weight: 600; }
-      .theme-night .bad, .theme-night .bad th, .theme-night .bad td { color: #ff7b70; }
+      .problems { margin: 0 0 0.5rem; padding: 0.5rem 0.8rem 0.5rem 1.7rem; background: #b3261e; color: #ffffff; font-weight: 700; font-size: 0.88rem; }
+      .bad, .bad th, .bad td { color: var(--bad); font-weight: 700; }
 
       /* Desk: the machine pane, the controls pane and, when it is out,
          the bench pane. */
       .desk { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 0.8rem; padding: 0.8rem; }
       .desk.with-bench { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 0.9fr); }
-      .pane {
-        min-height: 0; display: flex; flex-direction: column;
-        border-radius: 16px; background: var(--card); border: 1px solid var(--card-edge);
-        box-shadow: var(--shadow);
-        -webkit-backdrop-filter: blur(18px) saturate(1.25); backdrop-filter: blur(18px) saturate(1.25);
-      }
-      .pane-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.6rem 0.8rem 0.3rem; }
-      .pane-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0.5rem 0.9rem 0.9rem; }
-      .put-away { font-size: 0.74rem; padding: 0.3rem 0.6rem; }
+      .pane { min-height: 0; display: flex; flex-direction: column; background: var(--card); border: 2px solid var(--rule); }
+      .pane-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.6rem 0.8rem 0.5rem; border-bottom: 2px solid var(--rule); }
+      /* Section labels number themselves, as the packet's pages do. */
+      .pane-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0.4rem 0.9rem 0.9rem; counter-reset: label; }
       @media (max-width: 60rem) {
         .page { height: auto; min-height: 100vh; }
         .desk, .desk.with-bench { grid-template-columns: 1fr; }
         .pane-body { overflow: visible; }
       }
 
-      /* Machine pane: the front beside the inside, the shot under both. */
+      /* Machine pane: the front beside the inside, the shot under both.
+         The drawings are the photo slots: rounded, and the only place
+         the textures appear. */
       .machine-pane .pane-body { display: flex; flex-direction: column; }
       .views { flex: none; display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 0.8rem; align-items: center; }
       .shot-line { flex: none; }
       .machine-pane .chart { flex: 1; min-height: 6rem; }
+      .machine {
+        display: block; width: 100%; max-width: 22rem; margin: 0 auto; padding: 0.5rem; border-radius: 13px;
+        background-color: #55524d; background-image: linear-gradient(rgba(23, 18, 15, 0.25), rgba(23, 18, 15, 0.55)), url("../imgs/textures/brutalistWall.png");
+        background-size: cover; background-position: center;
+      }
 
-      /* Keys: brushed aluminium; lit ones and the main one are brass. */
+      /* Keys: square, ruled in green. The chosen one is filled green and
+         the main one is burnt orange. */
       button {
-        font: inherit; font-size: 0.86rem; font-weight: 600; padding: 0.42rem 0.8rem; cursor: pointer;
-        color: var(--key-ink); border-radius: 10px; border: 1px solid rgba(0, 0, 0, 0.32);
-        background-color: #c9ccd0;
-        background-image: var(--key-tint), url("../imgs/textures/bushedAlum.png");
-        background-size: auto, 200px;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 1px 3px rgba(0, 0, 0, 0.35);
-        transition: transform 0.08s ease, filter 0.15s ease;
+        font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.72rem; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase;
+        padding: 0.5rem 0.75rem; cursor: pointer; color: var(--key-ink); background: var(--key); border: 2px solid var(--rule); border-radius: 0;
+        transition: background 0.12s ease, color 0.12s ease;
       }
-      button:hover { filter: brightness(1.08); }
-      button:active { transform: translateY(1px); box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4); }
-      button.active, button.primary {
-        color: var(--brass-ink); border-color: rgba(60, 40, 0, 0.55);
-        background-color: #b08d57;
-        background-image: linear-gradient(rgba(255, 240, 200, 0.45), rgba(90, 55, 0, 0.18)), url("../imgs/textures/brushedBrass.png");
-        background-size: auto, 220px;
-        text-shadow: 0 1px 0 rgba(255, 240, 200, 0.5);
-      }
-      button.primary { padding: 0.5rem 1.2rem; font-size: 0.95rem; letter-spacing: 0.02em; }
-      .segmented { display: inline-flex; }
-      .segmented button { border-radius: 0; margin-left: -1px; }
-      .segmented button:first-child { border-radius: 10px 0 0 10px; margin-left: 0; }
-      .segmented button:last-child { border-radius: 0 10px 10px 0; }
-      .remove { font-size: 0.72rem; padding: 0.42rem 0.45rem; color: #b3261e; }
+      button:hover { background: var(--sage); color: #17120f; }
+      button:active { transform: translateY(1px); }
+      button.active { background: var(--on); border-color: var(--on); color: var(--on-ink); }
+      button.primary { background: #bc6a14; border-color: #bc6a14; color: #ffffff; padding: 0.65rem 1.4rem; letter-spacing: 0.24em; }
+      button.primary:hover { background: #e88a22; border-color: #e88a22; }
+      .segmented { display: inline-flex; flex-wrap: wrap; }
+      .segmented button { margin-left: -2px; }
+      .segmented button:first-child { margin-left: 0; }
+      .remove { color: var(--bad); border-color: var(--line); padding: 0.5rem 0.45rem; letter-spacing: 0.06em; }
+      .put-away { padding: 0.35rem 0.6rem; }
 
-      .section { margin: 0.6rem 0 0; display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
-      .section-title { width: 100%; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); }
-      p { margin: 0.4rem 0; font-size: 0.9rem; }
+      .section { margin: 0.8rem 0 0; display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+      .section-title { width: 100%; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.72rem; letter-spacing: 0.22em; text-transform: uppercase; color: var(--ink); }
+      .section-title::before { counter-increment: label; content: counter(label, decimal-leading-zero) " / "; color: var(--burnt); }
+      p { margin: 0.4rem 0; font-size: 0.9rem; line-height: 1.5; }
+      .note { font-size: 0.8rem; color: var(--muted); }
+      .choices { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0.5rem 0; }
 
-      /* Recipe fields. */
-      .fields { display: grid; gap: 0.55rem; margin: 0.6rem 0; }
-      .field { display: grid; grid-template-columns: 6.2rem 1fr 4.2rem 1rem; gap: 0.5rem; align-items: center; }
-      .field label { font-size: 0.86rem; color: var(--muted); }
-      input[type=text] {
-        font: inherit; font-size: 0.9rem; padding: 0.38rem 0.5rem; color: var(--ink);
-        border-radius: 8px; border: 1px solid var(--line); background: var(--field);
-        box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.25);
-      }
-      .exact { width: 100%; text-align: right; font-variant-numeric: tabular-nums; }
-      .unit { font-size: 0.8rem; color: var(--muted); }
-      .saved { display: inline-flex; gap: 0.15rem; }
+      /* Fields: a label, a slider and a box for the exact number. */
+      .fields { display: grid; gap: 0.45rem; margin: 0.6rem 0; }
+      .field { display: grid; grid-template-columns: 6.4rem 1fr 4.2rem 2rem; gap: 0.5rem; align-items: center; }
+      .field.wide { grid-template-columns: 6.4rem 1fr; }
+      .field label, .param label { font-size: 0.84rem; color: var(--muted); }
+      input[type=text] { font: inherit; font-size: 0.9rem; padding: 0.36rem 0.5rem; color: var(--ink); background: var(--card); border: 0; border-bottom: 2px solid var(--rule); border-radius: 0; min-width: 0; }
+      input[type=text]:focus { outline: none; border-bottom-color: var(--orange); }
+      .exact { width: 100%; text-align: right; font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+      .unit { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.68rem; letter-spacing: 0.08em; color: var(--muted); }
+      .saved { display: inline-flex; }
+      .saved .remove { margin-left: -2px; }
+      /* Sliders: a 2px rule and the packet's open circle. */
       input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 1.4rem; background: transparent; }
-      input[type=range]::-webkit-slider-runnable-track { height: 0.36rem; border-radius: 0.2rem; background: rgba(0, 0, 0, 0.45); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.18); }
-      input[type=range]::-moz-range-track { height: 0.36rem; border-radius: 0.2rem; background: rgba(0, 0, 0, 0.45); }
-      input[type=range]::-webkit-slider-thumb {
-        -webkit-appearance: none; width: 1.25rem; height: 1.25rem; margin-top: -0.45rem; border-radius: 50%;
-        border: 1px solid rgba(60, 40, 0, 0.7); background-color: #b08d57;
-        background-image: radial-gradient(circle at 34% 28%, rgba(255, 250, 230, 0.85), rgba(255, 250, 230, 0) 48%), url("../imgs/textures/brushedBrass.png");
-        background-size: auto, 90px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
-      }
-      input[type=range]::-moz-range-thumb {
-        width: 1.25rem; height: 1.25rem; border-radius: 50%; border: 1px solid rgba(60, 40, 0, 0.7);
-        background-color: #b08d57; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
-      }
+      input[type=range]::-webkit-slider-runnable-track { height: 2px; background: var(--rule); }
+      input[type=range]::-moz-range-track { height: 2px; background: var(--rule); }
+      input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 1.2rem; height: 1.2rem; margin-top: -0.55rem; border-radius: 50%; background: var(--card); border: 2px solid var(--rule); }
+      input[type=range]::-moz-range-thumb { width: 1rem; height: 1rem; border-radius: 50%; background: var(--card); border: 2px solid var(--rule); }
+      input[type=range]:hover::-webkit-slider-thumb, input[type=range]:active::-webkit-slider-thumb { background: var(--orange); border-color: var(--orange); }
 
       /* Readouts. */
       table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-      th { text-align: left; font-weight: 500; width: 45%; color: var(--muted); }
-      th, td { padding: 0.28rem 0.3rem; border-bottom: 1px solid var(--line); font-size: 0.88rem; }
-      .log { margin: 0.2rem 0 0.5rem; padding-left: 1.1rem; font-size: 0.88rem; }
+      th { text-align: left; font-weight: 400; width: 45%; color: var(--muted); }
+      th, td { padding: 0.3rem 0.2rem; border-bottom: 1px solid var(--line); font-size: 0.86rem; }
+      .log { margin: 0.2rem 0 0.5rem; padding-left: 1.1rem; font-size: 0.86rem; }
       .log li { margin: 0.15rem 0; }
 
-      /* Drawings. The schematic and the chart sit on paper in both themes. */
-      .machine { display: block; width: 100%; max-width: 22rem; margin: 0 auto; filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.45)); }
-      .inside, .chart { display: block; width: 100%; height: auto; background: var(--paper); border-radius: 10px; border: 1px solid var(--line); box-shadow: inset 0 0 22px rgba(120, 90, 40, 0.18); }
+      /* Drawings sit on the packet's paper in both themes. */
+      .inside, .chart, .wheel { display: block; width: 100%; height: auto; background: #f4eedf; border: 2px solid var(--rule); }
+      .inside { border-radius: 13px; }
       .chart polyline { stroke-width: 2; vector-effect: non-scaling-stroke; }
-      .chart .grid { stroke: #dcd3bf; stroke-width: 1; }
-      .chart .bar { stroke: #1f5fa8; }
-      .chart .flow { stroke: #2c8a57; }
-      .chart .water { stroke: #c2410c; }
-      .chart .target { stroke: #c2410c; stroke-dasharray: 5 4; opacity: 0.6; }
-      .chart .grams { stroke: #6b4fa0; }
-      .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; font-size: 0.76rem; color: var(--muted); }
-      .key::before { content: ""; display: inline-block; width: 0.9rem; height: 0.2rem; margin-right: 0.35rem; vertical-align: middle; }
-      .key.bar::before { background: #1f5fa8; }
-      .key.flow::before { background: #2c8a57; }
-      .key.water::before { background: #c2410c; }
-      .key.target::before { background: #c2410c; opacity: 0.5; }
-      .key.grams::before { background: #6b4fa0; }
-
-      /* Designer, scope and settings. */
-      .note { font-size: 0.8rem; color: var(--muted); }
-      .field.wide { grid-template-columns: 6.2rem 1fr; }
-      .choices { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0.5rem 0; }
-      .steps { display: grid; gap: 0.25rem; margin: 0.5rem 0; }
-      .step-row { display: grid; grid-template-columns: 1.6rem 6rem 1fr; gap: 0.5rem; align-items: center; text-align: left; padding: 0.3rem 0.5rem; font-weight: 500; }
-      .step-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .step-what { font-size: 0.8rem; font-variant-numeric: tabular-nums; }
-      .step-number {
-        width: 1.5rem; height: 1.5rem; border-radius: 50%; display: grid; place-items: center;
-        font-size: 0.76rem; font-weight: 700; color: var(--brass-ink); background: rgba(255, 255, 255, 0.55);
-        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
-      }
-      .step { margin: 0.5rem 0; padding: 0.5rem 0.7rem; border-radius: 12px; border: 1px solid var(--line); background: var(--field); }
-      .step .fields { margin: 0.4rem 0; gap: 0.3rem; }
-      .param { display: grid; grid-template-columns: minmax(7rem, 1.3fr) 1fr 4.6rem 4.4rem; gap: 0.45rem; align-items: center; padding: 0.12rem 0; }
-      .param label { font-size: 0.8rem; color: var(--muted); }
-      .param .unit { font-size: 0.7rem; }
-      .param.changed label { color: var(--brass); font-weight: 600; }
-      .param.changed .exact { border-color: var(--brass); }
-      .chart .reservoir { stroke: #c2410c; }
-      .chart .group { stroke: #6b4fa0; }
-      .chart .steam { stroke: #1f5fa8; }
-      .chart .watts { stroke: #8a8172; stroke-width: 1; }
-      .key.reservoir::before { background: #c2410c; }
-      .key.group::before { background: #6b4fa0; }
-      .key.steam::before { background: #1f5fa8; }
-      .key.watts::before { background: #8a8172; }
+      .chart .grid { stroke: rgba(23, 18, 15, 0.12); stroke-width: 1; }
+      .chart .bar { stroke: #264a3a; }
+      .chart .flow { stroke: #4d8a60; }
+      .chart .water { stroke: #bc6a14; }
+      .chart .target { stroke: #e88a22; stroke-dasharray: 5 4; }
+      .chart .grams { stroke: #17120f; }
+      .chart .reservoir { stroke: #bc6a14; }
+      .chart .group { stroke: #17120f; }
+      .chart .steam { stroke: #264a3a; }
+      .chart .watts { stroke: #9c948a; stroke-width: 1; }
+      .legend { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.66rem; letter-spacing: 0.04em; color: var(--muted); }
+      .key::before { content: ""; display: inline-block; width: 0.9rem; height: 2px; margin-right: 0.35rem; vertical-align: middle; }
+      .key.bar::before, .key.steam::before { background: #264a3a; }
+      .key.flow::before { background: #4d8a60; }
+      .key.water::before, .key.reservoir::before { background: #bc6a14; }
+      .key.target::before { background: #e88a22; }
+      .key.grams::before, .key.group::before { background: var(--ink); }
+      .key.watts::before { background: #9c948a; }
 
       /* Forecast: the shot the present recipe would pull. */
-      .forecast { font-size: 0.84rem; font-weight: 600; }
-      .forecast.bad { color: #e5392f; }
-      .theme-night .forecast.bad { color: #ff7b70; }
-      .chart .band { fill: rgba(120, 90, 40, 0.05); }
-      .chart .band.odd { fill: rgba(120, 90, 40, 0.12); }
-      .chart .band.open { fill: rgba(176, 141, 87, 0.34); }
-      .chart .band-name { font-size: 9px; font-weight: 700; fill: #5c4a36; }
-      .chart .axis { font-size: 8px; fill: #8a7a66; }
-      .chart .goal { fill: none; stroke: #2a1f17; stroke-width: 2; }
-      .chart .goal-line { stroke: #2a1f17; stroke-width: 1; stroke-dasharray: 2 4; }
+      .forecast { font-size: 0.86rem; font-weight: 700; padding: 0.4rem 0.6rem; border-left: 4px solid var(--green); }
+      .forecast.bad { color: var(--bad); border-left-color: var(--bad); }
+      .chart .band { fill: rgba(159, 187, 166, 0.16); }
+      .chart .band.odd { fill: rgba(159, 187, 166, 0.34); }
+      .chart .band.open { fill: rgba(232, 138, 34, 0.26); }
+      .chart .band-name { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 8px; letter-spacing: 1px; text-transform: uppercase; fill: #17120f; }
+      .chart .axis { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 8px; fill: #625a50; }
+      .chart .goal { fill: #ffffff; stroke: #bc6a14; stroke-width: 3; }
+      .chart .goal-line { stroke: #bc6a14; stroke-width: 1; stroke-dasharray: 2 4; }
 
-      /* Now brewing: the beans in use, on a brass plate over the machine. */
-      .now-playing {
-        flex: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.7rem;
-        margin-bottom: 0.6rem; padding: 0.45rem 0.9rem; border-radius: 8px; color: #2b1d08;
-        background-color: #b08d57;
-        background-image: linear-gradient(rgba(255, 240, 200, 0.42), rgba(80, 50, 0, 0.2)), url("../imgs/textures/brushedBrass.png");
-        background-size: auto, 260px;
-        box-shadow: inset 0 0 0 1px rgba(255, 240, 200, 0.45), 0 2px 6px rgba(0, 0, 0, 0.4);
-      }
-      .now-label { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.75; }
-      .now-bean { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; font-size: 1.05rem; font-weight: 600; }
-      .now-details { font-size: 0.8rem; }
-      .now-cup { width: 100%; font-size: 0.8rem; font-weight: 600; }
+      /* Now brewing: the beans in use, set as a headline. */
+      .now-playing { flex: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.1rem 0.8rem; margin-bottom: 0.6rem; padding-bottom: 0.45rem; border-bottom: 2px solid var(--rule); }
+      .now-label { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.7rem; letter-spacing: 0.22em; text-transform: uppercase; color: var(--burnt); }
+      .now-bean { font-family: "Shippori Mincho", "Noto Serif JP", "Iowan Old Style", Georgia, serif; font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+      .now-details { font-size: 0.84rem; color: var(--muted); }
+      .now-cup { width: 100%; font-size: 0.84rem; font-weight: 700; }
       .now-cup:empty { display: none; }
+
+      /* The coffee map. */
+      .wheel { max-width: 30rem; margin: 0.4rem auto; border: 0; background: transparent; }
+      .wheel text { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 13px; pointer-events: none; }
+      .wheel-note { stroke: #ffffff; stroke-width: 2; cursor: pointer; }
+      .wheel-note:hover { fill: #ffffff; }
+      .wheel-note.lit { stroke: #bc6a14; stroke-width: 4; }
+      .wheel-note.wanted { stroke: #264a3a; stroke-width: 6; stroke-dasharray: 9 5; }
+      .wheel-name { letter-spacing: 1.2px; fill: #17120f; }
+      .wheel-name.lit { font-weight: 600; fill: #bc6a14; }
+      .wheel-family, .wheel-band { font-weight: 500; letter-spacing: 3px; fill: #17120f; }
+      .wheel-band { letter-spacing: 1px; }
+      .wheel-family.light, .wheel-band.light { fill: #ffffff; }
+      .wheel-tick { stroke: #e88a22; stroke-width: 5; }
+      .wheel-dot { fill: #e88a22; stroke: #ffffff; stroke-width: 3; }
+      .theme-night .wheel-name { fill: #17120f; }
+
+      /* Designer and settings. */
+      .steps { display: grid; gap: 0.3rem; margin: 0.5rem 0; }
+      .step-row { display: grid; grid-template-columns: 1.7rem 6rem 1fr; gap: 0.5rem; align-items: center; text-align: left; padding: 0.35rem 0.5rem; text-transform: none; letter-spacing: 0.02em; }
+      .step-name { font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .step-what { font-family: "Zen Kaku Gothic New", "Noto Sans JP", system-ui, sans-serif; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+      .step-number { color: var(--burnt); font-weight: 700; }
+      .step-number::before { content: "0"; }
+      .step-row.active .step-number { color: #e8dfc6; }
+      .step { margin: 0.5rem 0; padding: 0.5rem 0.7rem; border: 2px solid var(--rule); border-left-width: 6px; }
+      .step .fields { margin: 0.4rem 0; gap: 0.3rem; }
+      .param { display: grid; grid-template-columns: minmax(7rem, 1.3fr) 1fr 4.6rem 4.4rem; gap: 0.45rem; align-items: center; padding: 0.1rem 0; }
+      .param label { font-size: 0.8rem; }
+      .param.changed label { color: var(--burnt); font-weight: 700; }
+      .param.changed .exact { border-bottom-color: var(--orange); }
     </style>
   </head>
   <body>

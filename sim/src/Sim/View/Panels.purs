@@ -1,6 +1,6 @@
 -- | What the machine pane, the brew tab and the bench's problem and
 -- | reading tabs show.
-module Sim.View.Panels (machineView, brew, faults, readings) where
+module Sim.View.Panels (machineView, brew, cup, faults, readings) where
 
 import Prelude
 
@@ -12,6 +12,7 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Sim.Cup as Cup
+import Sim.Flavor as Flavor
 import Sim.Controller (Event(..), heaterDrawWatts, shotInProgress)
 import Sim.Invariants (checks)
 import Sim.Model (Action(..), Field(..), State)
@@ -23,6 +24,7 @@ import Sim.View.Bench (forecastLine)
 import Sim.View.Chart (chart)
 import Sim.View.Front (front)
 import Sim.View.Inside (inside)
+import Sim.View.Wheel (wheel)
 import Sim.View.Widgets (button, chosen, cls, clock, legend, n1, n2, numBox, primary, row, rowIf, section, segmented, slider, table, toggle)
 import Sim.World (World, sensors)
 
@@ -167,6 +169,39 @@ nowPlaying st =
       , HH.span [ cls "now-details" ] [ HH.text (joinWith ", " details) ]
       , HH.span [ cls "now-cup" ] [ HH.text cupNote ]
       ]
+
+------------------------------------------------------------
+-- Controls pane, cup tab
+------------------------------------------------------------
+
+-- | The coffee map: where the forecast cup lands, the notes it should
+-- | show, and how to get to a note that is wanted.
+cup :: forall w. State -> Array (HH.HTML w Action)
+cup st =
+  let
+    r = st.recipe
+    extracted = st.forecast.extracted
+    shows = take 4 (Flavor.expected r.roast extracted)
+  in
+    [ section "The coffee map" []
+    , wheel { place: Flavor.place r.roast extracted, wanted: st.wanted }
+    , HH.p [ cls "note" ]
+        [ HH.text "Outlined notes are what the forecast cup should show. The mark on the outer band is where it lands between light and dark. Click a note to ask how to reach it." ]
+    , section "This cup" []
+    , HH.p_
+        [ HH.text
+            ( (if r.name == "" then "These beans" else r.name) <> ", " <> roastLabel r.roast <> " roast: "
+                <> joinWith ", " (map _.name shows) <> ". " <> Cup.tasteNote (Cup.taste extracted)
+            )
+        ]
+    , section "The cup you want" []
+    , HH.p_
+        [ HH.text case st.wanted of
+            Just note -> Flavor.routeNote r.roast note (Flavor.route r.roast extracted note)
+            Nothing -> "No note chosen."
+        ]
+    , forecastLine st
+    ]
 
 presetButton :: forall w. Recipe -> HH.HTML w Action
 presetButton recipe =

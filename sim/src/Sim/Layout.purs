@@ -22,7 +22,7 @@ import Data.Maybe (fromMaybe)
 import Data.String (Pattern(..), joinWith, split)
 
 -- | The tabs of the controls pane.
-data Tab = Brew | Shape | Tuning
+data Tab = Brew | Cup | Shape | Tuning
 
 derive instance eqTab :: Eq Tab
 
@@ -41,11 +41,12 @@ defaultView :: View
 defaultView = { tab: Brew, benchTab: Faults, benchOpen: false }
 
 tabs :: Array Tab
-tabs = [ Brew, Shape, Tuning ]
+tabs = [ Brew, Cup, Shape, Tuning ]
 
 tabTitle :: Tab -> String
 tabTitle = case _ of
   Brew -> "Brew"
+  Cup -> "Cup"
   Shape -> "Profile"
   Tuning -> "Settings"
 

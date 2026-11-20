@@ -37,7 +37,7 @@ import Sim.Shapes as Shapes
 import Sim.Store as Store
 import Sim.Update (applyRecipe, frame, refreshForecast, skipWarmUp)
 import Sim.View.Bench (designer, scope, settings)
-import Sim.View.Panels (brew, faults, machineView, readings)
+import Sim.View.Panels (brew, cup, faults, machineView, readings)
 import Sim.View.Widgets (chosen, cls, clock, segmented)
 import Sim.World (initialWorld, paramsOf, send, worldWith)
 
@@ -86,6 +86,7 @@ component =
         , theme: Day
         , stepOpen: 0
         , paramGroup: Loops
+        , wanted: Nothing
         , forecast: forecast Params.defaults (toProfile (NEA.toArray Profiles.all) defaultRecipe) (puckOf defaultRecipe)
         }
     , render
@@ -243,6 +244,7 @@ render st =
                 , HH.div [ cls "pane-body" ]
                     ( case st.view.tab of
                         Brew -> brew st
+                        Cup -> cup st
                         Shape -> designer st
                         Tuning -> settings st
                     )
