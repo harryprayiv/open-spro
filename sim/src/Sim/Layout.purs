@@ -1,118 +1,79 @@
--- | Which panels the page shows, in what order, and which are folded
--- | away. The order is the user's to change and is remembered.
+-- | How the page is arranged: three fixed panes. The machine pane shows
+-- | the front, the inside and the shot. The controls pane holds every
+-- | control behind tabs. The bench pane holds testing and problems and
+-- | can be put away.
 module Sim.Layout
-  ( Panel(..)
-  , Slot
-  , Layout
-  , defaultLayout
-  , title
-  , moveEarlier
-  , moveLater
-  , toggle
+  ( Tab(..)
+  , BenchTab(..)
+  , View
+  , defaultView
+  , tabs
+  , tabTitle
+  , benchTabs
+  , benchTitle
   , encode
   , decode
   ) where
 
 import Prelude
 
-import Data.Array (catMaybes, elem, filter, findIndex, index, length, updateAt)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Array (find)
+import Data.Maybe (fromMaybe)
 import Data.String (Pattern(..), joinWith, split)
 
-data Panel
-  = Machine
-  | RecipePanel
-  | ShotPanel
-  | InsidePanel
-  | Log
-  | SensorsPanel
-  | ActuatorsPanel
-  | InvariantsPanel
+-- | The tabs of the controls pane.
+data Tab = Brew | Shape | Tuning
 
-derive instance eqPanel :: Eq Panel
+derive instance eqTab :: Eq Tab
 
-type Slot = { panel :: Panel, open :: Boolean }
+-- | The tabs of the bench pane.
+data BenchTab = Faults | Readings | Scope
 
-type Layout = Array Slot
+derive instance eqBenchTab :: Eq BenchTab
 
-defaultLayout :: Layout
-defaultLayout =
-  [ { panel: Machine, open: true }
-  , { panel: Log, open: true }
-  , { panel: RecipePanel, open: true }
-  , { panel: ShotPanel, open: true }
-  , { panel: InsidePanel, open: true }
-  , { panel: SensorsPanel, open: false }
-  , { panel: ActuatorsPanel, open: false }
-  , { panel: InvariantsPanel, open: false }
-  ]
+type View =
+  { tab :: Tab
+  , benchTab :: BenchTab
+  , benchOpen :: Boolean
+  }
 
-title :: Panel -> String
-title = case _ of
-  Machine -> "Machine"
-  RecipePanel -> "Recipe"
-  ShotPanel -> "Shot"
-  InsidePanel -> "Inside"
-  Log -> "What is happening"
-  SensorsPanel -> "Sensors"
-  ActuatorsPanel -> "Actuators"
-  InvariantsPanel -> "Spec invariants"
+defaultView :: View
+defaultView = { tab: Brew, benchTab: Faults, benchOpen: false }
 
-code :: Panel -> String
-code = case _ of
-  Machine -> "machine"
-  RecipePanel -> "recipe"
-  ShotPanel -> "shot"
-  InsidePanel -> "inside"
-  Log -> "log"
-  SensorsPanel -> "sensors"
-  ActuatorsPanel -> "actuators"
-  InvariantsPanel -> "invariants"
+tabs :: Array Tab
+tabs = [ Brew, Shape, Tuning ]
 
-fromCode :: String -> Maybe Panel
-fromCode = case _ of
-  "machine" -> Just Machine
-  "recipe" -> Just RecipePanel
-  "shot" -> Just ShotPanel
-  "inside" -> Just InsidePanel
-  "log" -> Just Log
-  "sensors" -> Just SensorsPanel
-  "actuators" -> Just ActuatorsPanel
-  "invariants" -> Just InvariantsPanel
-  _ -> Nothing
+tabTitle :: Tab -> String
+tabTitle = case _ of
+  Brew -> "Brew"
+  Shape -> "Profile"
+  Tuning -> "Settings"
 
-swap :: Int -> Int -> Layout -> Layout
-swap i j layout = fromMaybe layout do
-  a <- index layout i
-  b <- index layout j
-  updateAt i b layout >>= updateAt j a
+benchTabs :: Array BenchTab
+benchTabs = [ Faults, Readings, Scope ]
 
-moveEarlier :: Panel -> Layout -> Layout
-moveEarlier panel layout = case findIndex (\slot -> slot.panel == panel) layout of
-  Just i | i > 0 -> swap i (i - 1) layout
-  _ -> layout
+benchTitle :: BenchTab -> String
+benchTitle = case _ of
+  Faults -> "Problems"
+  Readings -> "Readings"
+  Scope -> "Scope"
 
-moveLater :: Panel -> Layout -> Layout
-moveLater panel layout = case findIndex (\slot -> slot.panel == panel) layout of
-  Just i | i < length layout - 1 -> swap i (i + 1) layout
-  _ -> layout
+-- | Three words separated by commas. The titles double as the stored
+-- | names.
+encode :: View -> String
+encode view =
+  joinWith ","
+    [ tabTitle view.tab
+    , benchTitle view.benchTab
+    , if view.benchOpen then "open" else "away"
+    ]
 
-toggle :: Panel -> Layout -> Layout
-toggle panel = map \slot -> if slot.panel == panel then slot { open = not slot.open } else slot
-
-encode :: Layout -> String
-encode layout = joinWith "," (map (\slot -> code slot.panel <> (if slot.open then ":1" else ":0")) layout)
-
--- | Unknown entries are dropped and panels missing from the stored text
--- | are appended, so a layout saved by an older page still works.
-decode :: String -> Layout
-decode text =
-  let
-    entry part = case split (Pattern ":") part of
-      [ name, flag ] -> fromCode name <#> \panel -> { panel, open: flag == "1" }
-      _ -> Nothing
-    stored = catMaybes (map entry (split (Pattern ",") text))
-    present = map _.panel stored
-    missing = filter (\slot -> not (elem slot.panel present)) defaultLayout
-  in
-    stored <> missing
+-- | Anything unreadable falls back to the default for that part.
+decode :: String -> View
+decode text = case split (Pattern ",") text of
+  [ tab, benchTab, open ] ->
+    { tab: fromMaybe defaultView.tab (find (\t -> tabTitle t == tab) tabs)
+    , benchTab: fromMaybe defaultView.benchTab (find (\t -> benchTitle t == benchTab) benchTabs)
+    , benchOpen: open == "open"
+    }
+  _ -> defaultView

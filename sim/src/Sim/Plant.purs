@@ -5,11 +5,12 @@ module Sim.Plant
   ( Plant
   , Disturbance
   , PlantConstants
-  , constants
+  , defaultConstants
   , initialPlant
   , noDisturbance
   , stepPlant
   , readSensors
+  , Puck
   , freshPuck
   , warmPlant
   ) where
@@ -37,7 +38,9 @@ noDisturbance =
   }
 
 type Plant =
-  { reservoirC :: Number
+  { -- The physical constants of this particular machine.
+    k :: PlantConstants
+  , reservoirC :: Number
   , groupBlockC :: Number
   , steamC :: Number
   , steamWaterMl :: Number
@@ -49,13 +52,18 @@ type Plant =
   , mixSensorC :: Number
   , groupWaterC :: Number
   , puckDoseG :: Number
+  , puckResistance :: Number
+  , puckSolubility :: Number
   , puckWetMl :: Number
+  -- The share of what the coffee can give up that has left the puck.
+  , extracted :: Number
   , cupGrams :: Number
   , flowMlPerS :: Number
   }
 
 type PlantConstants =
   { ambientC :: Number
+  , inletC :: Number
   , regulatedLineBar :: Number
   , pumpMaxMlPerS :: Number
   , pumpSlipMlPerSBar :: Number
@@ -66,6 +74,8 @@ type PlantConstants =
   , puckFillMl :: Number
   , puckFillMlPerSBar :: Number
   , puckResistanceBarSPerMl :: Number
+  , extractionPerMl :: Number
+  , extractionPerC :: Number
   , coldBranchMaxRatio :: Number
   , mixVolumeMl :: Number
   , insertVolumeMl :: Number
@@ -85,9 +95,10 @@ type PlantConstants =
   , steamDrawGPerS :: Number
   }
 
-constants :: PlantConstants
-constants =
+defaultConstants :: PlantConstants
+defaultConstants =
   { ambientC: 22.0
+  , inletC: 15.0
   , regulatedLineBar: 3.0
   , pumpMaxMlPerS: 10.0
   , pumpSlipMlPerSBar: 0.15
@@ -98,6 +109,8 @@ constants =
   , puckFillMl: 22.0
   , puckFillMlPerSBar: 6.0
   , puckResistanceBarSPerMl: 4.2
+  , extractionPerMl: 0.032
+  , extractionPerC: 0.04
   , coldBranchMaxRatio: 2.0
   , mixVolumeMl: 1.0
   , insertVolumeMl: 4.0
@@ -117,38 +130,56 @@ constants =
   , steamDrawGPerS: 1.0
   }
 
-initialPlant :: Plant
-initialPlant =
-  { reservoirC: constants.ambientC
+-- | A cold machine built with the given constants.
+initialPlant :: PlantConstants -> Plant
+initialPlant constants =
+  { k: constants
+  , reservoirC: constants.ambientC
   , groupBlockC: constants.ambientC
   , steamC: constants.ambientC
-  , steamWaterMl: 1350.0
+  , steamWaterMl: constants.steamProbeMl - 150.0
   , steamLevelOk: false
   , lineBar: constants.regulatedLineBar
-  , inletC: 15.0
+  , inletC: constants.inletC
   , brewBar: 0.0
   , mixTrueC: constants.ambientC
   , mixSensorC: constants.ambientC
   , groupWaterC: constants.ambientC
   , puckDoseG: constants.referenceDoseG
+  , puckResistance: 1.0
+  , puckSolubility: 1.0
   , puckWetMl: 0.0
+  , extracted: 0.0
   , cupGrams: 0.0
   , flowMlPerS: 0.0
   }
 
+-- | What the barista put in the basket. `resistance` and `solubility`
+-- | are relative to a medium roast at the reference grind: 1.0 is that
+-- | coffee, more resistance slows the water and more solubility gives
+-- | up flavour sooner.
+type Puck = { doseG :: Number, resistance :: Number, solubility :: Number }
+
 -- | A new dry puck of the given dose in the group and an empty cup on
 -- | the scale.
-freshPuck :: Number -> Plant -> Plant
-freshPuck doseG p = p { puckDoseG = doseG, puckWetMl = 0.0, cupGrams = 0.0 }
+freshPuck :: Puck -> Plant -> Plant
+freshPuck puck p = p
+  { puckDoseG = puck.doseG
+  , puckResistance = puck.resistance
+  , puckSolubility = puck.solubility
+  , puckWetMl = 0.0
+  , extracted = 0.0
+  , cupGrams = 0.0
+  }
 
 -- | Jump the plant to a heated state so a session does not have to
 -- | start with a twenty minute warm-up.
-warmPlant :: Number -> Plant -> Plant
-warmPlant groupTargetC p = p
-  { reservoirC = 104.0
+warmPlant :: Number -> Number -> Plant -> Plant
+warmPlant reservoirTargetC groupTargetC p = p
+  { reservoirC = reservoirTargetC
   , groupBlockC = groupTargetC
   , steamC = 133.0
-  , steamWaterMl = constants.steamProbeMl
+  , steamWaterMl = p.k.steamProbeMl
   , steamLevelOk = true
   , mixTrueC = groupTargetC
   , mixSensorC = groupTargetC
@@ -172,7 +203,7 @@ saturationGaugeBar tC =
 stepPlant :: Number -> Disturbance -> Actuators -> Plant -> Plant
 stepPlant dt d a p =
   let
-    k = constants
+    k = p.k
 
     -- inlet
     lineTarget = if d.inletOpen then k.regulatedLineBar else 0.0
@@ -195,7 +226,7 @@ stepPlant dt d a p =
     doseScale = p.puckDoseG / k.referenceDoseG
     fillMl = k.puckFillMl * doseScale
     saturated = p.puckWetMl >= fillMl
-    resistance = k.puckResistanceBarSPerMl * doseScale * (1.0 - 0.35 * clamp01 (p.cupGrams / 45.0))
+    resistance = k.puckResistanceBarSPerMl * doseScale * p.puckResistance * (1.0 - 0.35 * clamp01 (p.cupGrams / 45.0))
     qPuck =
       if not toGroup then 0.0
       else if saturated then p.brewBar / resistance
@@ -207,6 +238,13 @@ stepPlant dt d a p =
     qGroup = if toGroup then qSource else 0.0
     puckWetMl = if saturated then p.puckWetMl else min fillMl (p.puckWetMl + qPuck * dt)
     cupGrams = if saturated then p.cupGrams + qPuck * dt else p.cupGrams
+    -- extraction: each millilitre through the wet puck takes a share of
+    -- what is left, a larger share from hotter water and a more soluble
+    -- coffee
+    perMl = k.extractionPerMl * p.puckSolubility * max 0.2 (1.0 + k.extractionPerC * (p.groupWaterC - 93.0))
+    extracted =
+      if saturated then p.extracted + (1.0 - p.extracted) * clamp01 (perMl * qPuck * dt)
+      else p.extracted
 
     -- temperature stage
     coldRatio =
@@ -270,19 +308,23 @@ stepPlant dt d a p =
       else if steamWaterMl < k.steamProbeMl - k.steamProbeHysteresisMl then false
       else p.steamLevelOk
   in
-    { reservoirC
+    { k
+    , reservoirC
     , groupBlockC
     , steamC
     , steamWaterMl
     , steamLevelOk
     , lineBar
-    , inletC: p.inletC
+    , inletC: k.inletC
     , brewBar
     , mixTrueC
     , mixSensorC
     , groupWaterC
     , puckDoseG: p.puckDoseG
+    , puckResistance: p.puckResistance
+    , puckSolubility: p.puckSolubility
     , puckWetMl
+    , extracted
     , cupGrams
     , flowMlPerS: qGroup
     }

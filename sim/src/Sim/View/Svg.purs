@@ -5,12 +5,15 @@ module Sim.View.Svg
   , num
   , svg
   , g
+  , defs
   , rect
   , circle
   , line
   , path
   , label
   , polyline
+  , texture
+  , sheen
   ) where
 
 import Prelude
@@ -42,6 +45,9 @@ svg = node "svg"
 g :: forall w i. Array Attr -> Array (HH.HTML w i) -> HH.HTML w i
 g = node "g"
 
+defs :: forall w i. Array (HH.HTML w i) -> HH.HTML w i
+defs = node "defs" []
+
 rect :: forall w i. Array Attr -> HH.HTML w i
 rect attrs = node "rect" attrs []
 
@@ -59,3 +65,29 @@ polyline attrs = node "polyline" attrs []
 
 label :: forall w i. Array Attr -> String -> HH.HTML w i
 label attrs content = node "text" attrs [ HH.text content ]
+
+-- | A repeating image fill, for use inside `defs`. Shapes refer to it
+-- | with `fill="url(#name)"`.
+texture :: forall w i. String -> String -> Number -> HH.HTML w i
+texture name file tile =
+  node "pattern"
+    [ at "id" name, at "patternUnits" "userSpaceOnUse"
+    , at "width" (num tile), at "height" (num tile)
+    ]
+    [ node "image"
+        [ at "href" file, at "width" (num tile), at "height" (num tile)
+        , at "preserveAspectRatio" "xMidYMid slice"
+        ]
+        []
+    ]
+
+-- | A top-to-bottom light falloff, for use inside `defs`, that gives a
+-- | flat textured face some depth.
+sheen :: forall w i. String -> HH.HTML w i
+sheen name =
+  node "linearGradient"
+    [ at "id" name, at "x1" "0", at "y1" "0", at "x2" "0", at "y2" "1" ]
+    [ node "stop" [ at "offset" "0", at "stop-color" "#ffffff", at "stop-opacity" "0.45" ] []
+    , node "stop" [ at "offset" "0.5", at "stop-color" "#ffffff", at "stop-opacity" "0" ] []
+    , node "stop" [ at "offset" "1", at "stop-color" "#000000", at "stop-opacity" "0.28" ] []
+    ]

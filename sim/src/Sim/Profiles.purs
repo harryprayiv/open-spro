@@ -8,7 +8,7 @@ module Sim.Profiles
 
 import Data.Array.NonEmpty (NonEmptyArray, cons')
 import Data.Maybe (Maybe(..))
-import Sim.Types (Profile, StepMode(..))
+import Sim.Types (Curve(..), Profile, StepMode(..))
 
 -- | Pump-driven wetting at fixed flow, then a flat nine bar.
 classic :: Profile
@@ -17,9 +17,12 @@ classic =
   , targetGrams: 36.0
   , groupBaseC: 92.0
   , maxTargetC: 93.0
+  , targetSeconds: Nothing
   , steps: cons'
       { name: "wet"
       , mode: Flow
+      , curve: Jump
+      , rampS: 0.0
       , targetC: 93.0
       , targetBar: Nothing
       , targetMlPerS: Just 2.0
@@ -29,6 +32,8 @@ classic =
       }
       [ { name: "hold"
         , mode: Pressure
+        , curve: Exponential
+        , rampS: 4.0
         , targetC: 93.0
         , targetBar: Just 9.0
         , targetMlPerS: Nothing
@@ -47,9 +52,12 @@ linePrebrew =
   , targetGrams: 40.0
   , groupBaseC: 92.0
   , maxTargetC: 93.0
+  , targetSeconds: Nothing
   , steps: cons'
       { name: "pre-brew"
       , mode: LinePrebrew
+      , curve: Jump
+      , rampS: 0.0
       , targetC: 93.0
       , targetBar: Nothing
       , targetMlPerS: Nothing
@@ -59,6 +67,8 @@ linePrebrew =
       }
       [ { name: "brew"
         , mode: Pressure
+        , curve: Ease
+        , rampS: 5.0
         , targetC: 93.0
         , targetBar: Just 9.0
         , targetMlPerS: Nothing
@@ -77,9 +87,12 @@ declining =
   , targetGrams: 42.0
   , groupBaseC: 90.0
   , maxTargetC: 96.0
+  , targetSeconds: Nothing
   , steps: cons'
       { name: "wet hot"
       , mode: Flow
+      , curve: Jump
+      , rampS: 0.0
       , targetC: 96.0
       , targetBar: Nothing
       , targetMlPerS: Just 1.5
@@ -89,6 +102,8 @@ declining =
       }
       [ { name: "peak"
         , mode: Pressure
+        , curve: Exponential
+        , rampS: 4.0
         , targetC: 94.0
         , targetBar: Just 8.5
         , targetMlPerS: Nothing
@@ -98,6 +113,8 @@ declining =
         }
       , { name: "decline"
         , mode: Pressure
+        , curve: Linear
+        , rampS: 10.0
         , targetC: 90.0
         , targetBar: Just 6.5
         , targetMlPerS: Nothing
@@ -107,6 +124,8 @@ declining =
         }
       , { name: "finish cool"
         , mode: Flow
+        , curve: Jump
+        , rampS: 0.0
         , targetC: 87.0
         , targetBar: Nothing
         , targetMlPerS: Just 1.8

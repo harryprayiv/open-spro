@@ -11,6 +11,7 @@ module Sim.Types
   , ShotState(..)
   , FaultKind(..)
   , ClientKind(..)
+  , Curve(..)
   , Step
   , Profile
   , Shot
@@ -18,7 +19,9 @@ module Sim.Types
   , Sensors
   , Actuators
   , Config
-  , config
+  , Tuning
+  , defaultConfig
+  , defaultTuning
   , idleActuators
   ) where
 
@@ -138,11 +141,26 @@ instance showClientKind :: Show ClientKind where
   show Service = "service"
   show Supervisor = "supervisor"
 
+-- | How a step's setpoints travel from where they were when the step
+-- | began to the step's own targets.
+data Curve = Jump | Linear | Ease | Exponential
+
+derive instance eqCurve :: Eq Curve
+
+instance showCurve :: Show Curve where
+  show Jump = "jump"
+  show Linear = "linear"
+  show Ease = "ease"
+  show Exponential = "exponential"
+
 -- | One step of a profile. The spec links steps with `next`; here the
 -- | order of the profile's array carries the same information.
 type Step =
   { name :: String
   , mode :: StepMode
+  , curve :: Curve
+  -- Seconds the setpoints take to reach this step's targets.
+  , rampS :: Number
   , targetC :: Number
   , targetBar :: Maybe Number
   , targetMlPerS :: Maybe Number
@@ -157,6 +175,9 @@ type Profile =
   , targetGrams :: Number
   , groupBaseC :: Number
   , maxTargetC :: Number
+  -- How long the shot should take to reach its weight. When present,
+  -- the machine paces the shot towards it.
+  , targetSeconds :: Maybe Number
   , steps :: NonEmptyArray Step
   }
 
@@ -241,6 +262,9 @@ type Config =
   , groupLimitC :: Number
   , steamLimitBar :: Number
   , brewPressureLimitBar :: Number
+  -- The most the machine may move a pressure setpoint, either way, to
+  -- pace a shot towards its target time.
+  , paceLimitBar :: Number
   , minInletBar :: Number
   , maxInletConductivityUs :: Number
   , fillTimeout :: Number
@@ -249,8 +273,8 @@ type Config =
   , blowdownAfterFills :: Int
   }
 
-config :: Config
-config =
+defaultConfig :: Config
+defaultConfig =
   { circuitBudgetWatts: 1440
   , brewElementWatts: 600
   , steamElementWatts: 1000
@@ -267,10 +291,58 @@ config =
   , groupLimitC: 110.0
   , steamLimitBar: 2.3
   , brewPressureLimitBar: 11.0
+  , paceLimitBar: 3.0
   , minInletBar: 1.5
   , maxInletConductivityUs: 250.0
   , fillTimeout: 90.0
   , shotTimeout: 120.0
   , idleSleepAfter: 2700.0
   , blowdownAfterFills: 200
+  }
+
+-- | What the firmware knows about its own hardware and how hard its
+-- | loops push. On the real machine the calibration half is measured on
+-- | the bench and the gain half is tuned against a scope.
+type Tuning =
+  { -- calibration
+    pumpMaxMlPerS :: Number
+  , pumpSlipMlPerSBar :: Number
+  , needleMlPerSBar :: Number
+  , coldBranchMaxRatio :: Number
+  -- pressure loop
+  , pumpKp :: Number
+  , pumpKi :: Number
+  , pumpIntegralLimit :: Number
+  , pumpIntegralAboveBar :: Number
+  -- mix loop
+  , mixTrimGain :: Number
+  , mixTrimShare :: Number
+  , mixTrimDelayS :: Number
+  , mixMinFlowMlPerS :: Number
+  -- pacing a shot towards its target time
+  , paceGain :: Number
+  , paceFilterS :: Number
+  , paceStartGrams :: Number
+  -- heater sharing
+  , heaterTurnS :: Number
+  }
+
+defaultTuning :: Tuning
+defaultTuning =
+  { pumpMaxMlPerS: 10.0
+  , pumpSlipMlPerSBar: 0.15
+  , needleMlPerSBar: 0.6
+  , coldBranchMaxRatio: 2.0
+  , pumpKp: 0.06
+  , pumpKi: 0.05
+  , pumpIntegralLimit: 0.6
+  , pumpIntegralAboveBar: 1.0
+  , mixTrimGain: 0.004
+  , mixTrimShare: 0.5
+  , mixTrimDelayS: 1.5
+  , mixMinFlowMlPerS: 0.3
+  , paceGain: 0.6
+  , paceFilterS: 1.0
+  , paceStartGrams: 6.0
+  , heaterTurnS: 2.0
   }

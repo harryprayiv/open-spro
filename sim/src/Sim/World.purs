@@ -3,9 +3,13 @@
 module Sim.World
   ( World
   , Sample
+  , ScopeSample
   , Happening
   , dt
+  , worldWith
   , initialWorld
+  , paramsOf
+  , setParams
   , stepWorld
   , stepMany
   , send
@@ -18,13 +22,15 @@ import Prelude
 import Data.Array (last, length, nub, snoc, takeEnd)
 import Data.Array.NonEmpty as NEA
 import Data.Either (Either)
-import Data.Int (round)
+import Data.Int (round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Sim.Controller (Ctl, Event(..), handle, initialCtl, shotInProgress, tick)
+import Sim.Controller (Ctl, Event(..), handle, heaterDrawWatts, initialCtl, shotInProgress, tick)
 import Sim.Invariants (violated)
-import Sim.Plant (Disturbance, Plant, freshPuck, initialPlant, noDisturbance, readSensors, stepPlant, warmPlant)
+import Sim.Params (Params)
+import Sim.Params as Params
+import Sim.Plant (Disturbance, Plant, Puck, freshPuck, initialPlant, noDisturbance, readSensors, stepPlant, warmPlant)
 import Sim.Profiles as Profiles
-import Sim.Types (MachineState(..), Sensors, ShotState(..), TwoWay(..), config)
+import Sim.Types (MachineState(..), Sensors, ShotState(..), TwoWay(..))
 
 -- | One point of the shot chart.
 type Sample =
@@ -35,6 +41,22 @@ type Sample =
   , groupWaterC :: Number
   , targetC :: Number
   , grams :: Number
+  -- The step the shot was in, and the pressure the controller was
+  -- asking for, if it was asking for one.
+  , step :: Int
+  , askedBar :: Maybe Number
+  -- How far pacing had moved the pressure setpoint.
+  , paceBar :: Number
+  }
+
+-- | One point of the long, slow traces: the thermal state every couple
+-- | of simulated seconds.
+type ScopeSample =
+  { t :: Number
+  , reservoirC :: Number
+  , groupC :: Number
+  , steamBar :: Number
+  , heaterW :: Number
   }
 
 -- | A line of the machine's log. `bad` marks the ones to show in red.
@@ -46,7 +68,7 @@ type World =
   , dist :: Disturbance
   , ctl :: Ctl
   -- Grams of coffee in the basket for the next shot.
-  , doseG :: Number
+  , puck :: Puck
   , trace :: Array Sample
   , shotStartedAt :: Number
   , lastSampleAt :: Number
@@ -54,24 +76,50 @@ type World =
   , violations :: Array String
   -- What the machine did by itself, newest last.
   , happenings :: Array Happening
+  , scope :: Array ScopeSample
+  , lastScopeAt :: Number
   }
 
 -- | Simulated seconds per step, for both the plant and the controller.
 dt :: Number
 dt = 0.025
 
-initialWorld :: World
-initialWorld =
+-- | Seconds between scope samples, and how many are kept.
+scopeEvery :: Number
+scopeEvery = 2.0
+
+scopeKept :: Int
+scopeKept = 900
+
+-- | A cold, sleeping machine built from the given parameters.
+worldWith :: Params -> World
+worldWith params =
   { now: 0.0
-  , plant: initialPlant
+  , plant: initialPlant params.plant
   , dist: noDisturbance
-  , ctl: initialCtl (NEA.head Profiles.all)
-  , doseG: 18.0
+  , ctl: initialCtl params.config params.tuning (NEA.head Profiles.all)
+  , puck: { doseG: params.plant.referenceDoseG, resistance: 1.0, solubility: 1.0 }
   , trace: []
   , shotStartedAt: 0.0
   , lastSampleAt: 0.0
   , violations: []
   , happenings: []
+  , scope: []
+  , lastScopeAt: 0.0
+  }
+
+initialWorld :: World
+initialWorld = worldWith Params.defaults
+
+paramsOf :: World -> Params
+paramsOf w = { plant: w.plant.k, config: w.ctl.cfg, tuning: w.ctl.tune }
+
+-- | Change parameters on a running machine. Temperatures, pressures and
+-- | the shot in progress carry on from where they are.
+setParams :: Params -> World -> World
+setParams params w = w
+  { plant = w.plant { k = params.plant }
+  , ctl = w.ctl { cfg = params.config, tune = params.tuning }
   }
 
 sensors :: World -> Sensors
@@ -95,6 +143,17 @@ stepWorld w =
       , groupWaterC: plant.groupWaterC
       , targetC: fromMaybe plant.mixSensorC ctl.mixTargetC
       , grams: plant.cupGrams
+      , step: maybe 0 _.stepIndex ctl.shot
+      , askedBar: ctl.pressureTargetBar
+      , paceBar: ctl.paceTrimBar
+      }
+    scopeDue = now - w.lastScopeAt >= scopeEvery
+    scopeSample =
+      { t: now
+      , reservoirC: plant.reservoirC
+      , groupC: plant.groupBlockC
+      , steamBar: s.steamBar
+      , heaterW: toNumber (heaterDrawWatts ctl.cfg ctl.act)
       }
   in
     w
@@ -105,6 +164,8 @@ stepWorld w =
       , lastSampleAt = if sampleDue then now else w.lastSampleAt
       , violations = if broken == [] then w.violations else nub (w.violations <> broken)
       , happenings = takeEnd 8 (w.happenings <> changes now w.ctl ctl)
+      , scope = if scopeDue then takeEnd scopeKept (snoc w.scope scopeSample) else w.scope
+      , lastScopeAt = if scopeDue then now else w.lastScopeAt
       }
 
 -- | Describe what one controller cycle changed without being asked.
@@ -121,7 +182,7 @@ changes now before after =
             )
       | after.state == Ready = say false "Ready."
       | after.state == Sleeping =
-          say true ("Went to sleep by itself after " <> show (round (config.idleSleepAfter / 60.0)) <> " idle minutes. Wake it to carry on.")
+          say true ("Went to sleep by itself after " <> show (round (after.cfg.idleSleepAfter / 60.0)) <> " idle minutes. Wake it to carry on.")
       | before.state == Ready && after.state == Heating =
           say false "Dropped out of ready while a temperature recovers."
       | otherwise = []
@@ -149,7 +210,7 @@ send event w = do
     ShotRequested ->
       w
         { ctl = ctl
-        , plant = freshPuck w.doseG w.plant
+        , plant = freshPuck w.puck w.plant
         , trace = []
         , shotStartedAt = w.now
         , lastSampleAt = w.now
@@ -158,4 +219,4 @@ send event w = do
 
 -- | Skip the warm-up: put the plant at operating temperature.
 warmUp :: World -> World
-warmUp w = w { plant = warmPlant w.ctl.groupTargetC w.plant }
+warmUp w = w { plant = warmPlant w.ctl.cfg.reservoirTargetC w.ctl.groupTargetC w.plant }

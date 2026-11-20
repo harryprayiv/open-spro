@@ -45,6 +45,14 @@ enum PumpMode { stopped | pressure_control | flow_control }
 -- pump speed and scale (the Decent style stages).
 enum StepMode { line_prebrew | pressure | flow }
 
+-- The path a setpoint takes from where it stood when a step began to the
+-- step's target, over the step's ramp time.
+-- jump: at the target at once. linear: a straight line. ease: slow, fast,
+-- slow (smoothstep). exponential: fast at first, settling into the target.
+-- Every curve is monotonic, starts at the old value and is at the target
+-- when the ramp time has passed. None overshoots.
+enum Curve { jump | linear | ease | exponential }
+
 enum ShotState { running | stopped_by_weight | stopped_by_time | stopped_by_user | aborted }
 
 enum FaultKind {
@@ -75,6 +83,10 @@ config {
 
     brew_limit_c: Decimal = 118.0
     mix_limit_c: Decimal = 99.0
+    -- the most pacing may move the pressure setpoint, either way
+    pace_limit_bar: Decimal = 3.0
+    -- a pressure setpoint is never set closer to the limit than this
+    pressure_headroom_bar: Decimal = 1.0
     group_limit_c: Decimal = 110.0
     steam_limit_bar: Decimal = 2.3
     brew_pressure_limit_bar: Decimal = 11.0
@@ -105,6 +117,9 @@ entity Machine {
     inlet_bar: Decimal
     inlet_conductivity_us: Decimal
     brew_bar: Decimal
+    -- Flow into the group as the firmware estimates it from pump speed
+    -- and slip, or from the needle valve while the bypass feeds.
+    flow_estimate_ml_per_s: Decimal
     brew_boiler_c: Decimal
     inlet_c: Decimal
     mix_c: Decimal
@@ -130,6 +145,8 @@ entity Machine {
     group_target_c: Decimal
     mix_target_c: Decimal?
     pressure_target_bar: Decimal?
+    -- how far pacing has moved the pressure setpoint from the profile
+    pace_trim_bar: Decimal
     flow_target_ml_per_s: Decimal?
 
     -- bookkeeping
@@ -200,12 +217,17 @@ entity Profile {
     group_base_c: Decimal
     -- hottest target_c of any step
     max_target_c: Decimal
+    -- how long the shot should take to reach target_grams; when present
+    -- the machine paces the shot towards it
+    target_seconds: Duration?
     first_step: Step
 }
 
 entity Step {
     next: Step?
     mode: StepMode
+    curve: Curve
+    ramp: Duration
     target_c: Decimal
     target_bar: Decimal?
     target_ml_per_s: Decimal?
@@ -223,7 +245,12 @@ entity Shot {
     step_started_at: Timestamp
     ended_at: Timestamp?
     final_grams: Decimal?
+    -- Where each setpoint stood when the present step began.
+    ramp_from_c: Decimal
+    ramp_from_bar: Decimal
+    ramp_from_ml_per_s: Decimal
 
+    ramp_done: step.curve = jump or step_started_at + step.ramp <= now
     step_expired: step_started_at + step.max_duration <= now
 
     step_pressure_reached:
@@ -444,25 +471,37 @@ rule StartShot {
             state: running,
             step: profile.first_step,
             started_at: now,
-            step_started_at: now
+            step_started_at: now,
+            ramp_from_c: profile.first_step.target_c,
+            ramp_from_bar: machine.brew_bar,
+            ramp_from_ml_per_s: machine.flow_estimate_ml_per_s
         )
         machine.last_activity_at = now
+        machine.pace_trim_bar = 0
         machine.group_valve = to_group
         machine.mix_valve = regulating
         ScaleTared(machine: machine)
         StepEntered(shot: shot)
 }
 
--- Every step sets the water temperature, whatever its mode. This holds
--- in line_prebrew too, because the bypass branch feeds the same hot and
--- cold split as the pump.
-rule SetStepTemperature {
+-- Entering a step records where each setpoint stands, so the ramp has a
+-- starting point. A setpoint that was not in force starts from the
+-- measured value: pressure from brew_bar, flow from the flow estimate.
+-- The first step's water temperature starts at its own target.
+rule BeginRamp {
     when: StepEntered(shot)
     requires: shot.state = running
-    ensures: shot.machine.mix_target_c = shot.step.target_c
+    ensures:
+        shot.ramp_from_c = shot.machine.mix_target_c ?? shot.step.target_c
+        shot.ramp_from_bar = shot.machine.pressure_target_bar ?? shot.machine.brew_bar
+        shot.ramp_from_ml_per_s = shot.machine.flow_target_ml_per_s ?? shot.machine.flow_estimate_ml_per_s
+        RampStarted(shot: shot)
 }
 
--- Entering a step sets the hydraulic configuration for its mode.
+-- Entering a step sets the hydraulic configuration for its mode at once.
+-- Only the setpoints ramp. A step's mode decides which setpoints exist:
+-- every step has a water temperature, whatever its mode, because the
+-- bypass branch feeds the same hot and cold split as the pump.
 rule EnterLinePrebrew {
     when: StepEntered(shot)
     requires:
@@ -483,7 +522,6 @@ rule EnterPressureStep {
     ensures:
         shot.machine.bypass_valve = closed
         shot.machine.pump = pressure_control
-        shot.machine.pressure_target_bar = shot.step.target_bar
         shot.machine.flow_target_ml_per_s = null
 }
 
@@ -495,8 +533,81 @@ rule EnterFlowStep {
     ensures:
         shot.machine.bypass_valve = closed
         shot.machine.pump = flow_control
-        shot.machine.flow_target_ml_per_s = shot.step.target_ml_per_s
         shot.machine.pressure_target_bar = null
+}
+
+-- While the ramp runs, each setpoint the step controls sits at
+--   ramp_from + (target - ramp_from) * curve(elapsed / ramp)
+-- and so always lies between ramp_from and the target. The firmware
+-- recomputes it every control cycle. The spec pins the two ends: the
+-- start (BeginRamp, and the three rules below for the instant of entry)
+-- and the finish (the three RampFinished rules).
+rule StartTemperatureRamp {
+    when: RampStarted(shot)
+    requires: shot.state = running
+    ensures: shot.machine.mix_target_c = shot.ramp_from_c
+}
+
+rule StartPressureRamp {
+    when: RampStarted(shot)
+    requires:
+        shot.state = running
+        shot.step.mode = pressure
+    ensures: shot.machine.pressure_target_bar = shot.ramp_from_bar
+}
+
+rule StartFlowRamp {
+    when: RampStarted(shot)
+    requires:
+        shot.state = running
+        shot.step.mode = flow
+    ensures: shot.machine.flow_target_ml_per_s = shot.ramp_from_ml_per_s
+}
+
+-- A step with a jump curve or no ramp time is done ramping as it begins,
+-- so these fire in the same instant as the rules above and win.
+rule TemperatureRampFinished {
+    when: shot: Shot.ramp_done
+    requires: shot.state = running
+    ensures: shot.machine.mix_target_c = shot.step.target_c
+}
+
+rule PressureRampFinished {
+    when: shot: Shot.ramp_done
+    requires:
+        shot.state = running
+        shot.step.mode = pressure
+    ensures: shot.machine.pressure_target_bar = shot.step.target_bar + shot.machine.pace_trim_bar
+}
+
+-- Pacing. With target_seconds on the profile, the machine works out the
+-- flow into the cup that would land target_grams on time, compares it
+-- with the flow the scale shows, and moves pace_trim_bar to close the
+-- gap: a slow puck gets more pressure and a fast one gets less. It acts
+-- only in pressure steps, only once coffee is reaching the cup, and only
+-- within pace_limit_bar. The trim is added to the ramped setpoint, and
+-- the sum is held pressure_headroom_bar under the brew pressure limit.
+-- How fast the trim moves is a control law and is not specified here.
+-- This spec pins the bounds (PaceTrimBounded, NoPaceOutsideShot,
+-- PressureSetpointUnderLimit) and the resets at StartShot, EndShot and
+-- on a fault.
+rule PaceShot {
+    when: PaceMoved(supervisor, shot, trim_bar)
+    requires:
+        shot.state = running
+        shot.profile.target_seconds != null
+        shot.step.mode = pressure
+        trim_bar <= config.pace_limit_bar
+        trim_bar >= 0 - config.pace_limit_bar
+    ensures: shot.machine.pace_trim_bar = trim_bar
+}
+
+rule FlowRampFinished {
+    when: shot: Shot.ramp_done
+    requires:
+        shot.state = running
+        shot.step.mode = flow
+    ensures: shot.machine.flow_target_ml_per_s = shot.step.target_ml_per_s
 }
 
 rule StepExitsOnTime {
@@ -577,6 +688,7 @@ rule EndShot {
         shot.machine.mix_target_c = null
         shot.machine.pressure_target_bar = null
         shot.machine.flow_target_ml_per_s = null
+        shot.machine.pace_trim_bar = 0
         shot.machine.last_activity_at = now
         if shot.machine.needs_fill:
             FillWanted(machine: shot.machine)
@@ -640,6 +752,7 @@ rule EnterFault {
         machine.group_valve = to_drain
         machine.mix_valve = parked
         machine.mix_target_c = null
+        machine.pace_trim_bar = 0
         for s in machine.shots where state = running:
             s.state = aborted
             s.ended_at = now
@@ -684,6 +797,23 @@ invariant SteamElementNeedsWater {
 invariant SteamOnlyInFullMode {
     for m in Machines:
         m.steam_element_on implies m.requested_mode = full
+}
+
+invariant PaceTrimBounded {
+    for m in Machines:
+        m.pace_trim_bar <= config.pace_limit_bar
+        and m.pace_trim_bar >= 0 - config.pace_limit_bar
+}
+
+invariant NoPaceOutsideShot {
+    for m in Machines:
+        not m.shot_in_progress implies m.pace_trim_bar = 0
+}
+
+invariant PressureSetpointUnderLimit {
+    for m in Machines:
+        m.pressure_target_bar != null implies
+            m.pressure_target_bar <= config.brew_pressure_limit_bar - config.pressure_headroom_bar
 }
 
 invariant PumpAndBypassExclusive {
@@ -802,6 +932,15 @@ surface SensorSupervisor {
         SensorFailed(supervisor, machine, kind)
 }
 
+-- The control loop's own step: it reports each move of the pacing trim.
+-- The supervisor stands for the firmware's periodic control task.
+surface PaceLoop {
+    facing supervisor: Supervisor
+    context shot: Shot
+    provides:
+        PaceMoved(supervisor, shot, trim_bar)
+}
+
 ------------------------------------------------------------
 -- Open questions
 ------------------------------------------------------------
@@ -825,3 +964,20 @@ surface SensorSupervisor {
 -- 7. Dose and brew ratio are not in this spec. The page turns a recipe
 --    (dose, ratio, temperature, profile shape) into a Profile before it
 --    reaches the machine.
+-- 9. The path of a setpoint during a ramp is a formula in a comment, and
+--    this spec pins only its two ends. The simulator's scenarios check
+--    the middle (a straight 10 s ramp is halfway at 5 s) and that no
+--    curve leaves the range between start and target.
+-- 10. The config block holds the default limits. The simulator lets
+--     every one be changed while it runs, along with the control gains
+--     and calibration figures, which this spec does not describe. Which
+--     of them a service client may change on the real machine, and
+--     within what bounds, is not decided. Until it is, the firmware
+--     should treat them all as fixed at build time.
+-- 11. Pacing changes brew pressure to hit a time, and pressure changes
+--     the taste. In simulation 3 bar of pacing moves a shot by only two
+--     or three seconds, so the grinder remains the real control and
+--     pacing is a trim. Whether pacing should instead act on flow, and
+--     whether it should be on by default, is not decided.
+-- 12. Roast, grind and extraction are not in this spec. They belong to
+--     the simulated puck and to the recipe the page keeps.

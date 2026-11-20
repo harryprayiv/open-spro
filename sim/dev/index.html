@@ -3,56 +3,271 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Espresso machine simulator</title>
+    <title>Espresso simulator</title>
     <style>
-      body { font-family: system-ui, sans-serif; margin: 0; background: #f6f5f2; color: #1d1d1b; }
-      .page { margin: 0 auto; padding: 0.6rem 0.8rem; }
-      .top { display: flex; flex-wrap: wrap; gap: 0.2rem 1.2rem; align-items: baseline; }
-      h1 { font-size: 1.15rem; margin: 0; }
-      h2 { font-size: 0.95rem; margin: 0; flex: 1; }
-      .status { font-weight: 600; margin: 0; }
-      .notice { color: #d32f2f; font-weight: 600; margin: 0; }
-      .problems { margin: 0.5rem 0; padding: 0.5rem 0.8rem 0.5rem 1.8rem; background: #fdecea; border: 2px solid #d32f2f; border-radius: 0.4rem; color: #a3180f; font-weight: 600; }
-      .bad, .bad th, .bad td { color: #d32f2f; font-weight: 600; }
-      .board { columns: 25rem; column-gap: 0.8rem; margin-top: 0.6rem; }
-      .panel { break-inside: avoid; margin: 0 0 0.8rem; padding: 0.6rem 0.7rem; background: #fff; border: 1px solid #d5d2c8; border-radius: 0.5rem; }
-      .panel-head { display: flex; gap: 0.3rem; align-items: center; margin-bottom: 0.3rem; }
-      .small { font-size: 0.72rem; padding: 0.2rem 0.45rem; color: #55534c; }
-      .log { margin: 0.2rem 0 0.5rem; padding-left: 1.1rem; font-size: 0.9rem; }
-      .foot { text-align: center; }
-      .section { margin: 0.5rem 0; display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
-      .section-title { width: 100%; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: #6a6860; }
-      button { font: inherit; padding: 0.45rem 0.7rem; border: 1px solid #b9b6ac; border-radius: 0.35rem; background: #fff; color: inherit; }
-      button.active { background: #1d1d1b; color: #fff; border-color: #1d1d1b; }
-      table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-      th { text-align: left; font-weight: 500; width: 45%; color: #55534c; }
-      th, td { padding: 0.25rem 0.3rem; border-bottom: 1px solid #e2dfd6; font-size: 0.92rem; }
-      .machine { display: block; width: 100%; max-width: 24rem; margin: 0 auto; }
-      .inside { display: block; width: 100%; background: #fff; border: 1px solid #d5d2c8; }
-      .fields { display: grid; gap: 0.5rem; margin: 0.6rem 0; }
-      .field { display: grid; grid-template-columns: 6.5rem 1fr 4.2rem 1rem; gap: 0.5rem; align-items: center; }
-      .field label { font-size: 0.9rem; color: #55534c; }
-      .field input[type=range] { width: 100%; }
-      input[type=text] { font: inherit; padding: 0.4rem 0.5rem; border: 1px solid #b9b6ac; border-radius: 0.35rem; background: #fff; color: inherit; }
-      .exact { width: 100%; box-sizing: border-box; text-align: right; font-variant-numeric: tabular-nums; }
-      .unit { font-size: 0.85rem; color: #6a6860; }
+      /* Textures live in sim/imgs/textures. Every textured surface also has
+         a plain colour, so a missing image costs the look and nothing else. */
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #14110f; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+
+      .theme-day {
+        --ink: #2a1f17; --muted: #6e5d4f; --line: rgba(60, 40, 20, 0.16);
+        --card: rgba(250, 245, 236, 0.84); --card-edge: rgba(255, 255, 255, 0.6);
+        --shadow: 0 12px 30px rgba(40, 20, 5, 0.32);
+        --room: #8a5a36; --room-image: url("../imgs/textures/woodPanel01.png");
+        --room-tint: linear-gradient(rgba(255, 236, 205, 0.10), rgba(50, 25, 8, 0.30));
+        --key-tint: linear-gradient(rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.18));
+        --key-ink: #241a12; --field: rgba(255, 255, 255, 0.72); --paper: #fbf7ee;
+        --brass: #a8843f; --brass-ink: #2b1d08;
+      }
+      .theme-night {
+        --ink: #efe6d8; --muted: #b6a792; --line: rgba(255, 230, 190, 0.14);
+        --card: rgba(24, 20, 18, 0.76); --card-edge: rgba(255, 214, 150, 0.14);
+        --shadow: 0 16px 36px rgba(0, 0, 0, 0.65);
+        --room: #14110f; --room-image: url("../imgs/textures/sugsugiBan.png");
+        --room-tint: linear-gradient(rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.62));
+        --key-tint: linear-gradient(rgba(40, 34, 30, 0.62), rgba(12, 10, 9, 0.80));
+        --key-ink: #f1e7d6; --field: rgba(0, 0, 0, 0.38); --paper: #efe6d2;
+        --brass: #d0a65a; --brass-ink: #2b1d08;
+      }
+
+      /* The page is exactly one screen tall. Panes scroll inside themselves. */
+      .page {
+        height: 100vh; display: flex; flex-direction: column; color: var(--ink);
+        background-color: var(--room);
+        background-image: var(--room-tint), var(--room-image);
+        background-size: cover; background-position: center;
+        transition: color 0.3s ease;
+      }
+
+      /* Top bar: a concrete lintel with a brass nameplate. */
+      .top {
+        flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.8rem;
+        padding: 0.6rem 1rem;
+        background-color: #55524d;
+        background-image: linear-gradient(rgba(0, 0, 0, 0.30), rgba(0, 0, 0, 0.55)), url("../imgs/textures/brutalistWall.png");
+        background-size: cover; background-position: center;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+      }
+      .plate {
+        margin: 0; padding: 0.4rem 1.4rem; border-radius: 6px;
+        font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+        font-size: 1rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase;
+        color: #2b1d08; text-shadow: 0 1px 0 rgba(255, 240, 200, 0.55);
+        background-color: #b08d57;
+        background-image: linear-gradient(rgba(255, 240, 200, 0.40), rgba(80, 50, 0, 0.22)), url("../imgs/textures/brushedBrass.png");
+        background-size: auto, 260px;
+        box-shadow: inset 0 0 0 1px rgba(255, 240, 200, 0.45), inset 0 -2px 5px rgba(0, 0, 0, 0.35), 0 2px 7px rgba(0, 0, 0, 0.6);
+      }
+      .chip {
+        padding: 0.22rem 0.7rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600;
+        color: #f1e7d6; background: rgba(0, 0, 0, 0.42); border: 1px solid rgba(255, 230, 190, 0.18);
+        font-variant-numeric: tabular-nums;
+      }
+      .chip.state-ready { background: #2f8f55; border-color: #7be0a0; }
+      .chip.state-heating { background: #a86a14; border-color: #f2b45a; }
+      .chip.state-faulted { background: #d32f2f; border-color: #ff9d94; }
+      .notice { flex: 1; min-width: 8rem; color: #ffb4ab; font-weight: 600; font-size: 0.9rem; }
+
+      /* Day and night switch: a brass knob in an aluminium track. */
+      .theme-switch {
+        position: relative; width: 6.4rem; height: 2.1rem; padding: 0; border-radius: 1.05rem; cursor: pointer;
+        border: 1px solid rgba(0, 0, 0, 0.6);
+        background-color: #9aa0a6;
+        background-image: linear-gradient(rgba(0, 0, 0, 0.42), rgba(255, 255, 255, 0.10)), url("../imgs/textures/bushedAlum.png");
+        background-size: auto, 200px;
+        box-shadow: inset 0 3px 6px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.25);
+      }
+      .theme-switch .sun, .theme-switch .moon {
+        position: absolute; top: 0; line-height: 2rem; font-size: 0.62rem; font-weight: 700;
+        letter-spacing: 0.12em; text-transform: uppercase; color: rgba(255, 255, 255, 0.82);
+      }
+      .theme-switch .sun { right: 0.7rem; }
+      .theme-switch .moon { left: 0.6rem; opacity: 0; }
+      .theme-switch.night .sun { opacity: 0; }
+      .theme-switch.night .moon { opacity: 1; }
+      .theme-switch .knob {
+        position: absolute; top: 0.16rem; left: 0.18rem; width: 1.7rem; height: 1.7rem; border-radius: 50%;
+        background-color: #b08d57;
+        background-image: radial-gradient(circle at 34% 28%, rgba(255, 250, 230, 0.85), rgba(255, 250, 230, 0) 46%), url("../imgs/textures/brushedBrass.png");
+        background-size: auto, 120px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.65), inset 0 -2px 3px rgba(0, 0, 0, 0.35);
+        transition: transform 0.38s cubic-bezier(0.3, 1.45, 0.5, 1);
+      }
+      .theme-switch.night .knob { transform: translateX(4.2rem); }
+
+      .alarm {
+        color: #fff; border-color: #ff9d94; border-radius: 999px; padding: 0.22rem 0.8rem;
+        background: #d32f2f; box-shadow: 0 0 14px rgba(255, 60, 40, 0.65);
+      }
+      .problems {
+        margin: 0 0 0.4rem; padding: 0.5rem 0.8rem 0.5rem 1.7rem; border-radius: 10px;
+        background: rgba(211, 47, 47, 0.92); color: #fff; font-weight: 600; font-size: 0.88rem;
+      }
+      .bad, .bad th, .bad td { color: #e5392f; font-weight: 600; }
+      .theme-night .bad, .theme-night .bad th, .theme-night .bad td { color: #ff7b70; }
+
+      /* Desk: the machine pane, the controls pane and, when it is out,
+         the bench pane. */
+      .desk { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 0.8rem; padding: 0.8rem; }
+      .desk.with-bench { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 0.9fr); }
+      .pane {
+        min-height: 0; display: flex; flex-direction: column;
+        border-radius: 16px; background: var(--card); border: 1px solid var(--card-edge);
+        box-shadow: var(--shadow);
+        -webkit-backdrop-filter: blur(18px) saturate(1.25); backdrop-filter: blur(18px) saturate(1.25);
+      }
+      .pane-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.6rem 0.8rem 0.3rem; }
+      .pane-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0.5rem 0.9rem 0.9rem; }
+      .put-away { font-size: 0.74rem; padding: 0.3rem 0.6rem; }
+      @media (max-width: 60rem) {
+        .page { height: auto; min-height: 100vh; }
+        .desk, .desk.with-bench { grid-template-columns: 1fr; }
+        .pane-body { overflow: visible; }
+      }
+
+      /* Machine pane: the front beside the inside, the shot under both. */
+      .machine-pane .pane-body { display: flex; flex-direction: column; }
+      .views { flex: none; display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 0.8rem; align-items: center; }
+      .shot-line { flex: none; }
+      .machine-pane .chart { flex: 1; min-height: 6rem; }
+
+      /* Keys: brushed aluminium; lit ones and the main one are brass. */
+      button {
+        font: inherit; font-size: 0.86rem; font-weight: 600; padding: 0.42rem 0.8rem; cursor: pointer;
+        color: var(--key-ink); border-radius: 10px; border: 1px solid rgba(0, 0, 0, 0.32);
+        background-color: #c9ccd0;
+        background-image: var(--key-tint), url("../imgs/textures/bushedAlum.png");
+        background-size: auto, 200px;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 1px 3px rgba(0, 0, 0, 0.35);
+        transition: transform 0.08s ease, filter 0.15s ease;
+      }
+      button:hover { filter: brightness(1.08); }
+      button:active { transform: translateY(1px); box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4); }
+      button.active, button.primary {
+        color: var(--brass-ink); border-color: rgba(60, 40, 0, 0.55);
+        background-color: #b08d57;
+        background-image: linear-gradient(rgba(255, 240, 200, 0.45), rgba(90, 55, 0, 0.18)), url("../imgs/textures/brushedBrass.png");
+        background-size: auto, 220px;
+        text-shadow: 0 1px 0 rgba(255, 240, 200, 0.5);
+      }
+      button.primary { padding: 0.5rem 1.2rem; font-size: 0.95rem; letter-spacing: 0.02em; }
+      .segmented { display: inline-flex; }
+      .segmented button { border-radius: 0; margin-left: -1px; }
+      .segmented button:first-child { border-radius: 10px 0 0 10px; margin-left: 0; }
+      .segmented button:last-child { border-radius: 0 10px 10px 0; }
+      .remove { font-size: 0.72rem; padding: 0.42rem 0.45rem; color: #b3261e; }
+
+      .section { margin: 0.6rem 0 0; display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+      .section-title { width: 100%; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); }
+      p { margin: 0.4rem 0; font-size: 0.9rem; }
+
+      /* Recipe fields. */
+      .fields { display: grid; gap: 0.55rem; margin: 0.6rem 0; }
+      .field { display: grid; grid-template-columns: 6.2rem 1fr 4.2rem 1rem; gap: 0.5rem; align-items: center; }
+      .field label { font-size: 0.86rem; color: var(--muted); }
+      input[type=text] {
+        font: inherit; font-size: 0.9rem; padding: 0.38rem 0.5rem; color: var(--ink);
+        border-radius: 8px; border: 1px solid var(--line); background: var(--field);
+        box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.25);
+      }
+      .exact { width: 100%; text-align: right; font-variant-numeric: tabular-nums; }
+      .unit { font-size: 0.8rem; color: var(--muted); }
       .saved { display: inline-flex; gap: 0.15rem; }
-      .remove { font-size: 0.75rem; padding: 0.45rem 0.4rem; color: #a12a16; }
-      .chart { width: 100%; height: auto; background: #fff; border: 1px solid #d5d2c8; }
+      input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 1.4rem; background: transparent; }
+      input[type=range]::-webkit-slider-runnable-track { height: 0.36rem; border-radius: 0.2rem; background: rgba(0, 0, 0, 0.45); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.18); }
+      input[type=range]::-moz-range-track { height: 0.36rem; border-radius: 0.2rem; background: rgba(0, 0, 0, 0.45); }
+      input[type=range]::-webkit-slider-thumb {
+        -webkit-appearance: none; width: 1.25rem; height: 1.25rem; margin-top: -0.45rem; border-radius: 50%;
+        border: 1px solid rgba(60, 40, 0, 0.7); background-color: #b08d57;
+        background-image: radial-gradient(circle at 34% 28%, rgba(255, 250, 230, 0.85), rgba(255, 250, 230, 0) 48%), url("../imgs/textures/brushedBrass.png");
+        background-size: auto, 90px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+      }
+      input[type=range]::-moz-range-thumb {
+        width: 1.25rem; height: 1.25rem; border-radius: 50%; border: 1px solid rgba(60, 40, 0, 0.7);
+        background-color: #b08d57; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+      }
+
+      /* Readouts. */
+      table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+      th { text-align: left; font-weight: 500; width: 45%; color: var(--muted); }
+      th, td { padding: 0.28rem 0.3rem; border-bottom: 1px solid var(--line); font-size: 0.88rem; }
+      .log { margin: 0.2rem 0 0.5rem; padding-left: 1.1rem; font-size: 0.88rem; }
+      .log li { margin: 0.15rem 0; }
+
+      /* Drawings. The schematic and the chart sit on paper in both themes. */
+      .machine { display: block; width: 100%; max-width: 22rem; margin: 0 auto; filter: drop-shadow(0 10px 14px rgba(0, 0, 0, 0.45)); }
+      .inside, .chart { display: block; width: 100%; height: auto; background: var(--paper); border-radius: 10px; border: 1px solid var(--line); box-shadow: inset 0 0 22px rgba(120, 90, 40, 0.18); }
       .chart polyline { stroke-width: 2; vector-effect: non-scaling-stroke; }
-      .chart .grid { stroke: #e7e4dc; stroke-width: 1; }
+      .chart .grid { stroke: #dcd3bf; stroke-width: 1; }
       .chart .bar { stroke: #1f5fa8; }
       .chart .flow { stroke: #2c8a57; }
       .chart .water { stroke: #c2410c; }
       .chart .target { stroke: #c2410c; stroke-dasharray: 5 4; opacity: 0.6; }
       .chart .grams { stroke: #6b4fa0; }
-      .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; font-size: 0.8rem; margin: 0.4rem 0; }
+      .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; font-size: 0.76rem; color: var(--muted); }
       .key::before { content: ""; display: inline-block; width: 0.9rem; height: 0.2rem; margin-right: 0.35rem; vertical-align: middle; }
       .key.bar::before { background: #1f5fa8; }
       .key.flow::before { background: #2c8a57; }
       .key.water::before { background: #c2410c; }
       .key.target::before { background: #c2410c; opacity: 0.5; }
       .key.grams::before { background: #6b4fa0; }
+
+      /* Designer, scope and settings. */
+      .note { font-size: 0.8rem; color: var(--muted); }
+      .field.wide { grid-template-columns: 6.2rem 1fr; }
+      .choices { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin: 0.5rem 0; }
+      .steps { display: grid; gap: 0.25rem; margin: 0.5rem 0; }
+      .step-row { display: grid; grid-template-columns: 1.6rem 6rem 1fr; gap: 0.5rem; align-items: center; text-align: left; padding: 0.3rem 0.5rem; font-weight: 500; }
+      .step-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .step-what { font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+      .step-number {
+        width: 1.5rem; height: 1.5rem; border-radius: 50%; display: grid; place-items: center;
+        font-size: 0.76rem; font-weight: 700; color: var(--brass-ink); background: rgba(255, 255, 255, 0.55);
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+      }
+      .step { margin: 0.5rem 0; padding: 0.5rem 0.7rem; border-radius: 12px; border: 1px solid var(--line); background: var(--field); }
+      .step .fields { margin: 0.4rem 0; gap: 0.3rem; }
+      .param { display: grid; grid-template-columns: minmax(7rem, 1.3fr) 1fr 4.6rem 4.4rem; gap: 0.45rem; align-items: center; padding: 0.12rem 0; }
+      .param label { font-size: 0.8rem; color: var(--muted); }
+      .param .unit { font-size: 0.7rem; }
+      .param.changed label { color: var(--brass); font-weight: 600; }
+      .param.changed .exact { border-color: var(--brass); }
+      .chart .reservoir { stroke: #c2410c; }
+      .chart .group { stroke: #6b4fa0; }
+      .chart .steam { stroke: #1f5fa8; }
+      .chart .watts { stroke: #8a8172; stroke-width: 1; }
+      .key.reservoir::before { background: #c2410c; }
+      .key.group::before { background: #6b4fa0; }
+      .key.steam::before { background: #1f5fa8; }
+      .key.watts::before { background: #8a8172; }
+
+      /* Forecast: the shot the present recipe would pull. */
+      .forecast { font-size: 0.84rem; font-weight: 600; }
+      .forecast.bad { color: #e5392f; }
+      .theme-night .forecast.bad { color: #ff7b70; }
+      .chart .band { fill: rgba(120, 90, 40, 0.05); }
+      .chart .band.odd { fill: rgba(120, 90, 40, 0.12); }
+      .chart .band.open { fill: rgba(176, 141, 87, 0.34); }
+      .chart .band-name { font-size: 9px; font-weight: 700; fill: #5c4a36; }
+      .chart .axis { font-size: 8px; fill: #8a7a66; }
+      .chart .goal { fill: none; stroke: #2a1f17; stroke-width: 2; }
+      .chart .goal-line { stroke: #2a1f17; stroke-width: 1; stroke-dasharray: 2 4; }
+
+      /* Now brewing: the beans in use, on a brass plate over the machine. */
+      .now-playing {
+        flex: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.7rem;
+        margin-bottom: 0.6rem; padding: 0.45rem 0.9rem; border-radius: 8px; color: #2b1d08;
+        background-color: #b08d57;
+        background-image: linear-gradient(rgba(255, 240, 200, 0.42), rgba(80, 50, 0, 0.2)), url("../imgs/textures/brushedBrass.png");
+        background-size: auto, 260px;
+        box-shadow: inset 0 0 0 1px rgba(255, 240, 200, 0.45), 0 2px 6px rgba(0, 0, 0, 0.4);
+      }
+      .now-label { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.75; }
+      .now-bean { font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; font-size: 1.05rem; font-weight: 600; }
+      .now-details { font-size: 0.8rem; }
+      .now-cup { width: 100%; font-size: 0.8rem; font-weight: 600; }
+      .now-cup:empty { display: none; }
     </style>
   </head>
   <body>
