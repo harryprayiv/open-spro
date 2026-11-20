@@ -14,13 +14,15 @@ import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
-import Sim.Flavor (families, noteCount, notes, strength)
+import Sim.Flavor (Character, families, noteCount, notes, shows)
 import Sim.Model (Action(..))
 import Sim.View.Svg (at, circle, label, line, num, path, svg)
 
 type WheelInput =
   { -- How far round the wheel the cup lands, 0 to 1.
     place :: Number
+  -- Its weight and clarity.
+  , character :: Character
   -- The note the barista is after, counted round from jasmine.
   , wanted :: Maybe Int
   }
@@ -82,8 +84,8 @@ wheel v =
     note i =
       let
         f = index families (i / 3)
-        shows = strength v.place i
-        lit = shows >= 0.35
+        shown = shows v.character v.place i
+        lit = shown >= 0.35
         isWanted = v.wanted == Just i
         klass = "wheel-note" <> (if lit then " lit" else "") <> (if isWanted then " wanted" else "")
       in
@@ -100,6 +102,11 @@ wheel v =
     tickIn = point 316.0 v.place
     tickOut = point 383.0 v.place
     dot = point 349.5 v.place
+    -- the cup's weight, along the spoke under the tick: heavy body near
+    -- the centre, sweet and clear near the rim
+    spokeIn = point 152.0 v.place
+    spokeOut = point 314.0 v.place
+    weightAt = point (233.0 - 75.0 * v.character.weight) v.place
   in
     svg [ at "viewBox" "-392 -392 784 784", at "class" "wheel" ]
       ( band
@@ -112,5 +119,8 @@ wheel v =
             , line
                 [ at "class" "wheel-tick", at "x1" (num tickIn.x), at "y1" (num tickIn.y), at "x2" (num tickOut.x), at "y2" (num tickOut.y) ]
             , circle [ at "class" "wheel-dot", at "cx" (num dot.x), at "cy" (num dot.y), at "r" "9" ]
+            , line
+                [ at "class" "wheel-spoke", at "x1" (num spokeIn.x), at "y1" (num spokeIn.y), at "x2" (num spokeOut.x), at "y2" (num spokeOut.y) ]
+            , circle [ at "class" "wheel-weight", at "cx" (num weightAt.x), at "cy" (num weightAt.y), at "r" "8" ]
             ]
       )

@@ -5,23 +5,25 @@ module Test.Main (main) where
 
 import Prelude
 
-import Data.Array (drop, last, length, take, zipWith)
+import Data.Array (drop, filter, last, length, take, zipWith)
 import Data.Array.NonEmpty (toArray)
 import Data.Either (Either(..), isLeft, isRight)
 import Data.Foldable (and, foldl, for_, maximum)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
 import Data.Number (abs)
 import Data.Number.Format (fixed, toStringWith)
-import Data.String (joinWith)
+import Data.String (Pattern(..), contains, joinWith)
 import Effect (Effect)
 import Effect.Console (log)
 import Effect.Exception (throw)
+import Sim.Advice (advise)
 import Sim.Controller (Event(..), shotInProgress)
 import Sim.Cup as Cup
 import Sim.Curve as Curve
 import Sim.Flavor as Flavor
 import Sim.Forecast (forecast)
 import Sim.Params as Params
+import Sim.Plant (brewed)
 import Sim.Profiles as Profiles
 import Sim.Recipe as Recipe
 import Sim.Shapes as Shapes
@@ -30,6 +32,9 @@ import Sim.World (World, dt, initialWorld, paramsOf, send, sensors, setParams, s
 
 n1 :: Number -> String
 n1 = toStringWith (fixed 1)
+
+n2 :: Number -> String
+n2 = toStringWith (fixed 2)
 
 -- | Step until the predicate holds or the time limit passes.
 runUntil :: Number -> (World -> Boolean) -> World -> World
@@ -257,8 +262,8 @@ pacing = do
   let puck factor = Params.defaults { plant = Params.defaults.plant { puckResistanceBarSPerMl = Params.defaults.plant.puckResistanceBarSPerMl * factor } }
   let off target f = abs (f.seconds - target)
   let report name f = log ("  " <> name <> ": " <> n1 f.grams <> " g in " <> n1 f.seconds <> " s, peak " <> n1 f.peakBar <> " bar, pacing at " <> n1 f.paceBar <> " bar" <> (if f.paceSpent then " (all it may use)" else ""))
-  let slowFree = forecast (puck 1.4) free plain
-  let slowPaced = forecast (puck 1.4) paced plain
+  let slowFree = forecast (puck 1.5) free plain
+  let slowPaced = forecast (puck 1.5) paced plain
   let fastFree = forecast (puck 0.7) free plain
   let fastPaced = forecast (puck 0.7) paced plain
   report "slow puck, left alone" slowFree
@@ -289,9 +294,15 @@ recipes = do
     [ medium, light, dark ] -> do
       expect "a lighter roast starts hotter" (light.tempC > medium.tempC && medium.tempC > dark.tempC)
       expect "a lighter roast starts with a longer shot" (light.seconds > medium.seconds && medium.seconds > dark.seconds)
-      let kept = light { name = "Gesha", roaster = "A roaster", roastedOn = "2026-11-02", paced = false, grind = -1.5 }
+      let kept = light { name = "Gesha", roaster = "A roaster", roastedOn = "2026-11-02", paced = false, grind = -1.5, soakS = 7.0 }
       expect "stored recipes read back the same" (Recipe.decode (Recipe.encode [ kept, dark ]) == [ kept, dark ])
     _ -> throw "expected three built-in recipes"
+  expect "a recipe stored before the soak was recorded reads with no soak"
+    (map _.soakS (Recipe.decode "B\t0\t18.0\t2.0\t93.0\tR\t2026\tCity\t26.0\tpaced\t0.0") == [ 0.0 ])
+  let starts = map (\roast -> Recipe.withRoastDefaults Recipe.house { roast = roast }) Recipe.roasts
+  expect "roasts lighter than Full City start with a soak, and the rest with none"
+    (map (\r -> r.soakS > 0.0) starts == map (\roast -> Recipe.development roast < 0.5) Recipe.roasts)
+  expect "a lighter roast never starts with a shorter soak" (and (zipWith (\a b -> a.soakS >= b.soakS) starts (drop 1 starts)))
   let old = Recipe.decode "Old beans\t0\t18.0\t2.0\t93.0"
   expect "a recipe stored before beans were recorded still reads" (map _.name old == [ "Old beans" ] && map _.paced old == [ false ])
 
@@ -353,7 +364,7 @@ beans = do
   expect "a recipe stored under the first three names still reads"
     (map (Recipe.roastLabel <<< _.roast) (Recipe.decode "B\t0\t18.0\t2.0\t93.0\tR\t2026\tDark\t26.0\tpaced\t0.0") == [ "French" ])
   where
-  plainRecipe = { name: "", roaster: "", roastedOn: "", roast: Recipe.FullCity, profileIndex: 0, doseG: 18.0, ratio: 2.0, tempC: 93.0, seconds: 28.0, paced: true, grind: 0.0 }
+  plainRecipe = { name: "", roaster: "", roastedOn: "", roast: Recipe.FullCity, profileIndex: 0, doseG: 18.0, ratio: 2.0, tempC: 93.0, seconds: 28.0, paced: true, grind: 0.0, soakS: 0.0 }
 
 -- | The coffee map: a light roast lands among flowers, citrus and
 -- | fruit, a dark one among cocoa, spice and roast, extraction moves a
@@ -361,7 +372,8 @@ beans = do
 coffeeMap :: Effect Unit
 coffeeMap = do
   log "The coffee map"
-  let top roast extracted = map _.name (take 3 (Flavor.expected roast extracted))
+  let clear = { weight: 0.0, clarity: 1.0 }
+  let top roast extracted = map _.name (take 3 (Flavor.expected roast extracted clear))
   for_ Recipe.roasts \roast ->
     log ("  " <> Recipe.roastLabel roast <> ", balanced: " <> joinWith ", " (top roast 0.675))
   expect "a City roast leads with a citrus or fruit note" (Flavor.place Recipe.City 0.675 > 3.0 / 24.0 && Flavor.place Recipe.City 0.675 < 9.0 / 24.0)
@@ -383,10 +395,173 @@ coffeeMap = do
       Flavor.OtherRoast other _ -> Recipe.development other < 0.2
       _ -> false)
 
+-- | A single step straight to 9 bar, with no wetting step before it:
+-- | the pump fills the dry puck as fast as it can and the pressure then
+-- | rises as fast as the pump can drive it.
+straight :: Profile
+straight = Profiles.classic
+  { name = "Straight 9 bar"
+  , steps = pure
+      { name: "brew"
+      , mode: Pressure
+      , curve: Jump
+      , rampS: 0.0
+      , targetC: Profiles.classic.maxTargetC
+      , targetBar: Just 9.0
+      , targetMlPerS: Nothing
+      , maxDuration: 60.0
+      , exitAboveBar: Nothing
+      , exitAboveGrams: Nothing
+      }
+  }
+
+-- | Pre-infusion: how the puck is wetted decides how even it stays,
+-- | an uneven puck runs faster and gives up less, a soak gives up more
+-- | and takes longer, and the grounds start cold.
+preInfusion :: World -> Effect Unit
+preInfusion warm = do
+  log "Pre-infusion: evenness, soak and puck temperature"
+  let plain = { doseG: 18.0, resistance: 1.0, solubility: 1.0 }
+  let fine = plain { resistance = 1.3 }
+  let run profile puck = forecast Params.defaults profile puck
+  let report name f = log ("  " <> name <> ": " <> n1 f.grams <> " g in " <> n1 f.seconds <> " s, extracted " <> n2 f.extracted <> ", evenness " <> n2 f.brewed.evenness <> ", dissolved at " <> n1 f.brewed.atC <> " C and " <> n1 f.brewed.atBar <> " bar")
+  let hard = run straight plain
+  let classic = run Profiles.classic plain
+  let line = run Profiles.linePrebrew { targetGrams = 36.0 } plain
+  report "straight to 9 bar" hard
+  report "classic, wetted at 2 ml/s" classic
+  report "line pressure pre-brew" line
+  expect "a fast fill and a steep ramp channel the puck" (Cup.channeled hard.brewed)
+  expect "a wetted puck does not channel" (not (Cup.channeled classic.brewed) && not (Cup.channeled line.brewed))
+  expect "the gentler the wetting, the more even the puck"
+    (hard.brewed.evenness < classic.brewed.evenness && classic.brewed.evenness < line.brewed.evenness)
+  expect "the channeled puck extracts less than the wetted one" (hard.extracted < classic.extracted - 0.03)
+  -- The same pressure through the same puck, with only the evenness
+  -- changed: the uneven one lets more water past.
+  let even = Params.defaults { plant = Params.defaults.plant { rampHarmPerBar = 0.0, fillHarmPerMl = 0.0 } }
+  let unharmed = forecast even straight plain
+  report "straight to 9 bar, with the harm switched off" unharmed
+  expect "with the harm switched off the same shot stays even" (unharmed.brewed.evenness == 1.0)
+  expect "the channeled puck runs faster than the same puck kept even" (hard.seconds < unharmed.seconds - 0.5)
+  expect "and extracts less" (hard.extracted < unharmed.extracted - 0.03)
+  let fineHard = run straight fine
+  let fineClassic = run Profiles.classic fine
+  report "straight to 9 bar, finer puck" fineHard
+  report "classic, finer puck" fineClassic
+  expect "a finer puck channels more under the same treatment"
+    (fineHard.brewed.evenness < hard.brewed.evenness && fineClassic.brewed.evenness < classic.brewed.evenness)
+  -- Soak, through the recipe.
+  let builtIns = toArray Profiles.all
+  let recipe soak = Recipe.house { paced = false, soakS = soak }
+  let pull soak = forecast Params.defaults (Recipe.toProfile builtIns (recipe soak)) (Recipe.puckOf (recipe soak))
+  let none = pull 0.0
+  let short = pull 6.0
+  let long = pull 20.0
+  report "house standard, no soak" none
+  report "house standard, 6 s soak" short
+  report "house standard, 20 s soak" long
+  expect "a recipe with a soak has one more step, after the first"
+    ( length (toArray (Recipe.toProfile builtIns (recipe 6.0)).steps) == length (toArray (Recipe.toProfile builtIns (recipe 0.0)).steps) + 1
+        && map _.name (take 2 (toArray (Recipe.toProfile builtIns (recipe 6.0)).steps)) == [ "wet", "soak" ]
+    )
+  expect "the soak step is line pressure and cannot fault the pump laws" (none.violations <> short.violations <> long.violations == [])
+  expect "a soak extracts more" (short.extracted > none.extracted && long.extracted > short.extracted)
+  expect "a soak makes the shot longer, by less than its own length"
+    (short.seconds > none.seconds + 2.0 && short.seconds < none.seconds + 6.0)
+  expect "a soak leaves the puck more even" (short.brewed.evenness > none.brewed.evenness)
+  expect "what a longer soak adds tails off" (long.extracted - short.extracted < (short.extracted - none.extracted) * 14.0 / 6.0)
+  expect "a soaked cup dissolved at a lower pressure" (long.brewed.atBar < none.brewed.atBar - 1.0)
+  -- Puck temperature.
+  expect "the coffee dissolves in a bed cooler than the water" (none.brewed.atC < Recipe.house.tempC - 3.0 && none.brewed.atC > 70.0)
+  let hot = forecast Params.defaults (Recipe.toProfile builtIns (recipe 0.0) { tempC = 96.0 }) (Recipe.puckOf (recipe 0.0))
+  expect "hotter water gives a hotter bed and extracts more" (hot.brewed.atC > none.brewed.atC + 1.0 && hot.extracted > none.extracted)
+  -- The live puck, step by step through a real shot.
+  w1 <- sendOrFail (ProfileSelected Profiles.classic) warm
+  let w2 = runUntil 1800.0 (\w -> w.ctl.state == Ready) (stepMany 40 w1)
+  w3 <- sendOrFail ShotRequested w2
+  expect "a fresh puck is dry, even, unsettled and at room temperature"
+    (w3.plant.puckWetMl == 0.0 && w3.plant.puckEvenness == 1.0 && w3.plant.puckSettled == 0.0 && w3.plant.puckC == w3.plant.k.ambientC)
+  let
+    follow ok w =
+      if not (shotInProgress w.ctl) then ok
+      else
+        let
+          next = stepWorld w
+          p = next.plant
+          sound =
+            p.puckEvenness <= w.plant.puckEvenness && p.puckEvenness >= 0.0
+              && p.puckSettled >= w.plant.puckSettled && p.puckSettled <= 1.0
+              && p.extracted >= w.plant.extracted
+              && p.dissolved >= 0.0 && p.dissolved <= p.k.soakCapacity
+              && p.extracted + p.dissolved <= 1.0
+              && p.puckC <= Profiles.classic.maxTargetC + 0.5
+        in
+          follow (ok && sound) next
+  expect "through a shot: evenness only falls, the puck only settles, the cup only gains, and nothing leaves its range" (follow true w3)
+  let after = runUntil 200.0 (\w -> not (shotInProgress w.ctl)) w3
+  expect "what the forecast says of the puck is what the shot did"
+    (abs ((brewed after.plant).evenness - classic.brewed.evenness) < 0.02 && abs (after.plant.extracted - classic.extracted) < 0.02)
+
+-- | The second position on the coffee map, and advice.
+character :: Effect Unit
+character = do
+  log "Weight, clarity and advice"
+  let builtIns = toArray Profiles.all
+  let pull r = forecast Params.defaults (Recipe.toProfile builtIns r) (Recipe.puckOf r)
+  let made r = Flavor.character r.tempC (pull r).brewed
+  let house = Recipe.house { paced = false }
+  let soaked = house { soakS = 20.0 }
+  log ("  house standard: weight " <> n2 (made house).weight <> ", clarity " <> n2 (made house).clarity <> ". " <> Flavor.characterNote (made house))
+  log ("  with a 20 s soak: weight " <> n2 (made soaked).weight <> ", clarity " <> n2 (made soaked).clarity <> ". " <> Flavor.characterNote (made soaked))
+  expect "the house standard sits between sweet and heavy" (abs (made house).weight < 0.2)
+  expect "a long soak moves the cup towards sweet and clear" ((made soaked).weight < (made house).weight - 0.3)
+  let hard = Flavor.character 93.0 (forecast Params.defaults straight { doseG: 18.0, resistance: 1.3, solubility: 1.0 }).brewed
+  expect "a channeled puck loses clarity" (hard.clarity < 0.5 && (made house).clarity > 0.9)
+  let lit c = length (filter (\n -> n.strength >= 0.35) (Flavor.expected Recipe.FullCity 0.675 c))
+  expect "a blurred cup shows fewer notes than a clear one" (lit hard < lit (made house))
+  expect "weight and clarity stay in range"
+    (hard.weight >= -1.0 && hard.weight <= 1.0 && hard.clarity >= 0.0 && (made soaked).weight >= -1.0)
+  -- Advice.
+  let free = { grind: true, temp: true, soak: true, seconds: true }
+  let ask held r = advise Params.defaults builtIns held r (pull r)
+  expect "a balanced, even cup gets no advice" (isNothing (ask free Recipe.house))
+  let light = Recipe.house { roast = Recipe.City }
+  case ask free light of
+    Nothing -> throw "FAILED: an under-extracted cup gets advice"
+    Just advice -> do
+      log ("  City beans on the house recipe: " <> advice.text)
+      expect "advice for an under-extracted cup extracts more" (advice.forecast.extracted > (pull light).extracted + 0.05)
+      expect "with every setting free it names a soak" (advice.recipe.soakS > 0.0 && contains (Pattern "soak") advice.text)
+      expect "and says what the water temperature alone would do" (contains (Pattern "water temperature alone") advice.text)
+      expect "the forecast it quotes is the forecast of the recipe it gives"
+        ((pull advice.recipe).extracted == advice.forecast.extracted && advice.from == light)
+      expect "a free shot time moves with the soak" (advice.recipe.seconds > light.seconds)
+  let holdSoak = free { soak = false, seconds = false }
+  case ask holdSoak light of
+    Nothing -> throw "FAILED: advice with the soak held"
+    Just advice -> do
+      log ("  the same, with soak and time held: " <> advice.text)
+      expect "held settings are left alone" (advice.recipe.soakS == light.soakS && advice.recipe.seconds == light.seconds)
+  expect "with everything held there is no advice" (isNothing (ask { grind: false, temp: false, soak: false, seconds: false } light))
+  let dark = Recipe.house { roast = Recipe.French }
+  case ask free dark of
+    Nothing -> throw "FAILED: an over-extracted cup gets advice"
+    Just advice -> do
+      log ("  French beans on the house recipe: " <> advice.text)
+      expect "advice for an over-extracted cup extracts less" (advice.forecast.extracted < (pull dark).extracted - 0.03)
+      expect "and does not add a soak to an even puck" (advice.recipe.soakS == 0.0)
+  expect "advice never leaves the limits of the recipe"
+    ( case ask free light { tempC = Recipe.tempLimits.max - 1.0, grind = Recipe.grindLimits.min } of
+        Just advice -> advice.recipe.tempC <= Recipe.tempLimits.max && advice.recipe.grind >= Recipe.grindLimits.min && advice.recipe.soakS <= Recipe.soakLimits.max
+        Nothing -> true
+    )
+  expect "advice exists for the under-extracted sample" (isJust (ask free light))
+
 main :: Effect Unit
 main = do
   coffeeMap
   beans
+  character
   curveShapes
   shapes
   recipes
@@ -403,5 +578,6 @@ main = do
   inletLoss warm
   steaming warm
   rampIsFollowed warm
+  preInfusion warm
   parameters cold
   log "All scenarios passed."

@@ -9,6 +9,7 @@ module Sim.Model
 import Prelude
 
 import Data.Maybe (Maybe)
+import Sim.Advice (Advice)
 import Sim.Controller (Event)
 import Sim.Forecast (Forecast)
 import Sim.Layout (View)
@@ -20,7 +21,7 @@ import Sim.World (World)
 import Web.UIEvent.MouseEvent (MouseEvent)
 
 -- | The recipe settings that have a slider.
-data Field = Dose | Ratio | Target | Temp | Seconds | Grind
+data Field = Dose | Ratio | Target | Temp | Seconds | Grind | Soak
 
 derive instance eqField :: Eq Field
 
@@ -61,6 +62,8 @@ type State =
   -- worked out again whenever the recipe, a shape or a parameter
   -- changes, and not on every frame.
   , forecast :: Forecast
+  -- What to change when the forecast cup would not come out right.
+  , advice :: Maybe Advice
   }
 
 data Action

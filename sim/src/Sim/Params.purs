@@ -223,7 +223,18 @@ entries =
   , physics "puckFillMlPerSBar" "Puck conductance while filling" "ml/s per bar" 1.0 10.0 0.5 _.puckFillMlPerSBar (\v k -> k { puckFillMlPerSBar = v })
   , physics "puckResistanceBarSPerMl" "Wet puck resistance" "bar s/ml" 0.5 15.0 0.1 _.puckResistanceBarSPerMl (\v k -> k { puckResistanceBarSPerMl = v })
   , physics "extractionPerMl" "Extraction per ml through the puck" "share per ml" 0.005 0.1 0.001 _.extractionPerMl (\v k -> k { extractionPerMl = v })
-  , physics "extractionPerC" "Extraction change per degree of water" "share per C" 0.0 0.15 0.005 _.extractionPerC (\v k -> k { extractionPerC = v })
+  , physics "extractionPerC" "Extraction change per degree of the puck" "share per C" 0.0 0.15 0.005 _.extractionPerC (\v k -> k { extractionPerC = v })
+  , physics "soakPerS" "Extraction into water held in the puck" "share per s" 0.0 0.05 0.001 _.soakPerS (\v k -> k { soakPerS = v })
+  , physics "soakCapacity" "Most the held water can carry" "share" 0.02 0.5 0.01 _.soakCapacity (\v k -> k { soakCapacity = v })
+  , physics "coffeeJPerGK" "Heat capacity of dry coffee" "J/g K" 0.5 4.0 0.1 _.coffeeJPerGK (\v k -> k { coffeeJPerGK = v })
+  , physics "puckCouplingWPerK" "Heat passed between basket and puck" "W/K" 0.0 10.0 0.1 _.puckCouplingWPerK (\v k -> k { puckCouplingWPerK = v })
+  , physics "gentleFillMlPerS" "Fastest fill a dry puck takes without harm" "ml/s" 0.5 10.0 0.1 _.gentleFillMlPerS (\v k -> k { gentleFillMlPerS = v })
+  , physics "fillHarmPerMl" "Evenness lost to a faster fill" "share per ml" 0.0 0.1 0.001 _.fillHarmPerMl (\v k -> k { fillHarmPerMl = v })
+  , physics "gentleRampBarPerS" "Steepest ramp an unsettled puck takes without harm" "bar/s" 0.1 10.0 0.1 _.gentleRampBarPerS (\v k -> k { gentleRampBarPerS = v })
+  , physics "rampHarmPerBar" "Evenness lost to a steeper ramp" "share per bar" 0.0 0.5 0.01 _.rampHarmPerBar (\v k -> k { rampHarmPerBar = v })
+  , physics "puckSwellS" "Time the wet grounds take to settle" "s" 0.5 30.0 0.5 _.puckSwellS (\v k -> k { puckSwellS = v })
+  , physics "channelFlowGain" "Resistance a fully channeled puck loses" "share" 0.0 0.9 0.05 _.channelFlowGain (\v k -> k { channelFlowGain = v })
+  , physics "channelExtractionLoss" "Extraction a fully channeled puck loses" "share" 0.0 1.0 0.05 _.channelExtractionLoss (\v k -> k { channelExtractionLoss = v })
   ]
 
 -- | A figure worked out from the parameters, for the settings panel.

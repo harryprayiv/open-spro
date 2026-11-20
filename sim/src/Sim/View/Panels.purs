@@ -16,12 +16,13 @@ import Sim.Cup as Cup
 import Sim.Flavor as Flavor
 import Sim.Controller (Event(..), heaterDrawWatts, shotInProgress)
 import Sim.Invariants (checks)
+import Sim.Plant (brewed)
 import Sim.Model (Action(..), Field(..), State)
 import Sim.Problems (Problems, anyProblem)
 import Sim.Recipe (Recipe, Roast, roastLabel, roastNote, roasts, samples, targetGrams)
 import Sim.Types (ClientKind(..), FaultKind(..), PowerMode(..), Shot, StepMode(..))
 import Sim.Update (allShapes, applyRecipe, chooseRoast, chooseShape, fieldKey, findGrind, isLocked, limitsOf, setField, toggleLock, valueOf)
-import Sim.View.Bench (forecastLine)
+import Sim.View.Bench (adviceLine, forecastLine)
 import Sim.View.Chart (chart)
 import Sim.View.Front (front)
 import Sim.View.Inside (inside)
@@ -69,7 +70,7 @@ machineView st wrong =
                   else 2
             , problem: anyProblem wrong
             , flowMlPerS: w.plant.flowMlPerS
-            , streamColour: Cup.streamColour st.recipe.roast w.plant.extracted w.plant.flowMlPerS
+            , streamColour: Cup.streamColour st.recipe.roast w.plant.extracted w.plant.puckEvenness w.plant.flowMlPerS
             }
         , inside
             { now: w.now
@@ -127,9 +128,13 @@ brew st =
         , fieldRow st Seconds "Shot time" "s" 0
         , fieldRow st Temp "Water" "C" 1
         , fieldRow st Grind "Grind" "coarser" 1
+        , fieldRow st Soak "Soak" "s" 0
         ]
     , forecastLine st
-    , HH.div [ cls "choices" ]
+    ]
+      <> adviceLine st
+      <>
+    [ HH.div [ cls "choices" ]
         ( [ toggle "Pace to time" r.paced (Change \s -> applyRecipe s.recipe { paced = not s.recipe.paced } s) ]
             <> (if isLocked st Grind then [] else [ button "Find the grind" (Change \s -> applyRecipe (findGrind s s.recipe) s { draft = Nothing }) ])
             <> [ button "Save these beans" SavePreset ]
@@ -160,7 +165,7 @@ nowPlaying st =
     details = said r.roaster <> [ roastLabel r.roast <> " roast" ] <> (if r.roastedOn == "" then [] else [ "roasted " <> r.roastedOn ])
     cupNote =
       if shotInProgress st.world.ctl || null st.world.ctl.history then ""
-      else Cup.tasteNote (Cup.taste st.world.plant.extracted)
+      else Cup.cupNote st.world.plant.extracted (brewed st.world.plant)
   in
     HH.div [ cls "now-playing" ]
       [ HH.span [ cls "now-label" ] [ HH.text "Now brewing" ]
@@ -198,18 +203,26 @@ cup st =
   let
     r = st.recipe
     extracted = st.forecast.extracted
-    shows = take 4 (Flavor.expected r.roast extracted)
+    made = Flavor.character r.tempC st.forecast.brewed
+    shows = take 4 (Flavor.expected r.roast extracted made)
+    b = st.forecast.brewed
   in
     [ section "The coffee map" []
-    , wheel { place: Flavor.place r.roast extracted, wanted: st.wanted }
+    , wheel { place: Flavor.place r.roast extracted, character: made, wanted: st.wanted }
     , HH.p [ cls "note" ]
-        [ HH.text "Outlined notes are what the forecast cup should show. The mark on the outer band is where it lands between light and dark. Click a note to ask how to reach it." ]
+        [ HH.text "Outlined notes are what the forecast cup should show. The mark on the outer band is where it lands between light and dark. The mark on the spoke under it is the cup's weight: towards the rim is sweet and clear, towards the centre is heavy in body. An uneven puck outlines fewer notes. Click a note to ask how to reach it." ]
     , section "This cup" []
     , HH.p_
         [ HH.text
             ( (if r.name == "" then "These beans" else r.name) <> ", " <> roastLabel r.roast <> " roast: "
-                <> joinWith ", " (map _.name shows) <> ". " <> Cup.tasteNote (Cup.taste extracted)
+                <> joinWith ", " (map _.name shows) <> ". " <> Cup.cupNote extracted b
             )
+        ]
+    , HH.p_ [ HH.text (Flavor.characterNote made) ]
+    , table
+        [ row "Extracted" (n2 extracted <> " of what the coffee can give (balanced from 0.60 to 0.75)")
+        , row "Puck evenness" (n2 b.evenness <> " (1 is even, under 0.80 has channeled)")
+        , row "Dissolved at" (n1 b.atC <> " C in the puck, " <> n1 b.atBar <> " bar, on average")
         ]
     , section "The cup you want" []
     , HH.p_
@@ -219,6 +232,7 @@ cup st =
         ]
     , forecastLine st
     ]
+      <> adviceLine st
 
 presetButton :: forall w. Recipe -> HH.HTML w Action
 presetButton recipe =
@@ -351,6 +365,15 @@ readings st =
         , row "Flow into group" (n2 w.plant.flowMlPerS <> " ml/s" <> maybe "" (\t -> ", target " <> n2 t) c.flowTargetMlPerS)
         , rowIf (not s.steamLevelOk) "Steam" (n2 s.steamBar <> " bar, level " <> (if s.steamLevelOk then "ok" else "low"))
         , row "Cup" (n1 s.cupGrams <> " g")
+        ]
+    -- The puck has no sensors. These rows read the simulated puck
+    -- directly, and the real machine will not have them.
+    , section "Puck (simulation only)" []
+    , table
+        [ row "Wetted" (n1 w.plant.puckWetMl <> " ml held, settled " <> n2 w.plant.puckSettled)
+        , row "Bed temperature" (n1 w.plant.puckC <> " C")
+        , row "Evenness" (n2 w.plant.puckEvenness)
+        , row "Extracted" (n2 w.plant.extracted <> " in the cup, " <> n2 w.plant.dissolved <> " still held in the puck")
         ]
     , section "Actuators" []
     , table

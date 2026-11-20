@@ -962,8 +962,12 @@ surface PaceLoop {
 --    the water. Nothing yet proves the cold branch works before hot
 --    water is released; a pre-shot check of the cold branch is needed.
 -- 7. Dose and brew ratio are not in this spec. The page turns a recipe
---    (dose, ratio, temperature, profile shape) into a Profile before it
---    reaches the machine.
+--    (dose, ratio, temperature, soak, profile shape) into a Profile
+--    before it reaches the machine. A recipe's soak becomes one more
+--    line_prebrew step, placed after the shape's first step, with a
+--    max_duration equal to the soak and neither early exit. The machine
+--    runs it by EnterLinePrebrew and leaves it by the duration rule,
+--    like any other step, so a soak needs no rule of its own.
 -- 9. The path of a setpoint during a ramp is a formula in a comment, and
 --    this spec pins only its two ends. The simulator's scenarios check
 --    the middle (a straight 10 s ramp is halfway at 5 s) and that no
@@ -981,8 +985,19 @@ surface PaceLoop {
 --     whether it should be on by default, is not decided.
 -- 12. Roast, grind and extraction are not in this spec. They belong to
 --     the simulated puck and to the recipe the page keeps.
--- 13. The simulated puck does not model pre-infusion beyond filling the
---     dry puck. How gently it was wetted, how long it soaked and whether
---     it channeled have no effect on extraction or flow. Until they do,
---     nothing here or in the simulator can say what a pre-brew step is
---     worth, and the recipe advice ignores it.
+-- 13. The simulated puck now models pre-infusion, and none of it is in
+--     this spec, because the machine cannot sense any of it. The puck
+--     has an evenness that a fast fill and a steep ramp on unsettled
+--     grounds reduce, and an uneven puck flows faster and extracts
+--     less. The grounds start at room temperature and are heated by the
+--     water. Coffee dissolves into the water held in the puck for as
+--     long as it sits there, which is what a soak buys. The recipe
+--     advice tries a soak beside grind and temperature. Every constant
+--     in that model is a guess. Two things follow for this spec once
+--     the model has been checked against real shots: whether the
+--     built-in line pre-brew step should end on first drops (it now
+--     has exit_above_grams as well as exit_above_bar, so that a puck
+--     too open to reach the pressure exit does not sit out the whole
+--     max_duration), and whether a limit on how steeply a pressure
+--     setpoint may rise in the step after a wetting step belongs in
+--     the config block.

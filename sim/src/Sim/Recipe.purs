@@ -19,6 +19,8 @@ module Sim.Recipe
   , targetLimits
   , tempLimits
   , secondsLimits
+  , soakLimits
+  , shownStep
   , targetGrams
   , withTarget
   , toProfile
@@ -36,12 +38,12 @@ import Data.Array.NonEmpty as NEA
 import Data.Int (round, toNumber)
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Number (exp)
+import Data.Number (exp, pow)
 import Data.Number as Number
 import Data.String (Pattern(..), Replacement(..), joinWith, replaceAll, split)
 import Sim.Plant (Puck)
 import Sim.Profiles as Profiles
-import Sim.Types (Profile)
+import Sim.Types (Curve(..), Profile, StepMode(..))
 
 -- | Degree of roast, in the roaster's own names, from lightest to
 -- | darkest. The names are trade usage and not a standard: City, City+,
@@ -124,6 +126,17 @@ through atCity atFullCity atFrench roast =
     if d <= 0.55 then atFullCity + (atCity - atFullCity) * (0.55 - d) / 0.25
     else atFullCity + (atFrench - atFullCity) * (d - 0.55) / 0.35
 
+-- | The same three points joined by curves of constant ratio, for a
+-- | quantity that changes by a share with each step of roast and can
+-- | never reach nothing.
+throughRatio :: Number -> Number -> Number -> Roast -> Number
+throughRatio atCity atFullCity atFrench roast =
+  let
+    d = development roast
+  in
+    if d <= 0.55 then atFullCity * pow (atCity / atFullCity) ((0.55 - d) / 0.25)
+    else atFullCity * pow (atFrench / atFullCity) ((d - 0.55) / 0.35)
+
 type Recipe =
   { -- The beans. The name is also the name the recipe is saved under.
     name :: String
@@ -145,6 +158,9 @@ type Recipe =
   , paced :: Boolean
   -- Grinder steps from this bag's starting grind. Positive is coarser.
   , grind :: Number
+  -- Seconds the wet puck is left to soak at line pressure, after the
+  -- shape's first step has wetted it and before the pressure comes up.
+  , soakS :: Number
   }
 
 -- | The puck this recipe puts in the basket. At the same grind a darker
@@ -157,7 +173,7 @@ puckOf r =
   let
     roast =
       { resistance: through 0.85 1.0 1.3 r.roast
-      , solubility: through 0.72 1.0 1.3 r.roast
+      , solubility: throughRatio 0.62 1.0 1.6 r.roast
       }
   in
     { doseG: r.doseG
@@ -169,17 +185,23 @@ puckOf r =
 -- | time, grind and profile shape. Lighter roasts get a finer grind,
 -- | hotter water, a longer ratio and time, and a line-pressure pre-brew.
 -- | Darker roasts get a coarser grind, cooler water, and a shorter ratio
--- | and time.
+-- | and time. Roasts lighter than Full City also get a soak, longer the
+-- | lighter they are, because they are the slowest to wet through.
 withRoastDefaults :: Recipe -> Recipe
 withRoastDefaults r =
   let
     half value = toNumber (round (value * 2.0)) / 2.0
+    soak = clamp soakLimits.min soakLimits.max (toNumber (round (through 5.0 0.0 0.0 r.roast)))
   in
     r
       { tempC = clamp tempLimits.min tempLimits.max (half (through 95.0 93.0 90.0 r.roast))
       , ratio = clamp ratioLimits.min ratioLimits.max (toNumber (round (through 2.5 2.0 1.8 r.roast * 20.0)) / 20.0)
-      , seconds = clamp secondsLimits.min secondsLimits.max (toNumber (round (through 37.0 28.0 25.0 r.roast)))
+      -- The shot clock starts with the first water, so the soak is part
+      -- of the shot time. The puck drips while it soaks, so a second of
+      -- soak adds a little less than a second to the shot.
+      , seconds = clamp secondsLimits.min secondsLimits.max (toNumber (round (through 37.0 28.0 25.0 r.roast + 0.8 * soak)))
       , grind = clamp grindLimits.min grindLimits.max (half (through (-2.0) 0.0 3.0 r.roast))
+      , soakS = soak
       -- Anything lighter than Full City gets the line-pressure pre-brew.
       , profileIndex = if development r.roast < 0.5 then 1 else 0
       }
@@ -206,6 +228,9 @@ grindLimits = { min: -5.0, max: 5.0, step: 0.5 }
 secondsLimits :: Limits
 secondsLimits = { min: 15.0, max: 60.0, step: 1.0 }
 
+soakLimits :: Limits
+soakLimits = { min: 0.0, max: 30.0, step: 1.0 }
+
 targetGrams :: Recipe -> Number
 targetGrams r = r.doseG * r.ratio
 
@@ -221,21 +246,44 @@ toProfile shapes r =
   let
     base = fromMaybe (NEA.head Profiles.all) (index shapes r.profileIndex)
     shift = r.tempC - base.maxTargetC
+    first = NEA.head base.steps
+    -- The soak is a line-pressure step of fixed length with no early
+    -- exit, at the temperature of the step that wetted the puck.
+    soak =
+      { name: "soak"
+      , mode: LinePrebrew
+      , curve: Jump
+      , rampS: 0.0
+      , targetC: first.targetC
+      , targetBar: Nothing
+      , targetMlPerS: Nothing
+      , maxDuration: r.soakS
+      , exitAboveBar: Nothing
+      , exitAboveGrams: Nothing
+      }
+    steps =
+      if r.soakS > 0.0 then fromMaybe base.steps (NEA.insertAt 1 soak base.steps)
+      else base.steps
   in
     base
       { targetGrams = targetGrams r
       , groupBaseC = base.groupBaseC + shift
       , maxTargetC = r.tempC
       , targetSeconds = if r.paced then Just r.seconds else Nothing
-      , steps = map (\step -> step { targetC = step.targetC + shift }) base.steps
+      , steps = map (\step -> step { targetC = step.targetC + shift }) steps
       }
+
+-- | Where a step of the recipe's shape sits among the steps of the
+-- | profile the machine is given, which has the soak after the first.
+shownStep :: Recipe -> Int -> Int
+shownStep r i = if r.soakS > 0.0 && i >= 1 then i + 1 else i
 
 -- | The house standard: 22 g in, 44 g out, 30 seconds, on a Full City
 -- | roast. Everything else is a departure from this.
 house :: Recipe
 house =
   { name: "House espresso", roaster: "", roastedOn: "", roast: FullCity
-  , profileIndex: 0, doseG: 22.0, ratio: 2.0, tempC: 93.0, seconds: 30.0, paced: true, grind: 2.5
+  , profileIndex: 0, doseG: 22.0, ratio: 2.0, tempC: 93.0, seconds: 30.0, paced: true, grind: 2.5, soakS: 0.0
   }
 
 -- | The beans offered on the brew tab: the house standard, the three
@@ -249,9 +297,10 @@ samples =
   , at FullCity "Full City"
   , at Cinnamon "Lightest: Cinnamon"
   , at Italian "Darkest: Italian"
-  -- Under-extracted on purpose: coarser, cooler and shorter slides the
-  -- cup back towards flowers and citrus, at the cost of sourness.
-  , (at City "City, pushed bright") { grind = 3.5, tempC = 91.0, ratio = 1.6, seconds = 24.0, profileIndex = 0 }
+  -- Under-extracted on purpose: coarser, cooler and shorter with no
+  -- soak slides the cup back towards flowers and citrus, at the cost
+  -- of sourness.
+  , (at City "City, pushed bright") { grind = 3.5, tempC = 91.0, ratio = 1.6, seconds = 24.0, profileIndex = 0, soakS = 0.0 }
   -- Over-extracted on purpose: finer, hotter and longer slides the cup
   -- on towards cocoa and spice, at the cost of bitterness.
   , (at FullCity "Full City, pushed deep") { grind = 1.0, tempC = 96.0, ratio = 2.6, seconds = 40.0 }
@@ -274,7 +323,7 @@ builtIn =
   where
   blank =
     { name: "", roaster: "", roastedOn: "", roast: FullCity
-    , profileIndex: 0, doseG: 18.0, ratio: 2.0, tempC: 93.0, seconds: 30.0, paced: true, grind: 0.0
+    , profileIndex: 0, doseG: 18.0, ratio: 2.0, tempC: 93.0, seconds: 30.0, paced: true, grind: 0.0, soakS: 0.0
     }
 
 -- | One recipe per line, fields separated by tabs.
@@ -294,30 +343,38 @@ encode recipes = joinWith "\n" (map line recipes)
     , show r.seconds
     , if r.paced then "paced" else "free"
     , show r.grind
+    , show r.soakS
     ]
 
 -- | Lines that do not parse are dropped. A line with only the first five
 -- | fields was stored before recipes recorded their beans, and reads as
--- | a medium roast with no pacing.
+-- | a medium roast with no pacing. A line with eleven fields was stored
+-- | before recipes had a soak, and reads with none.
 decode :: String -> Array Recipe
 decode text = catMaybes (map line (filter (_ /= "") (split (Pattern "\n") text)))
   where
   line l = case split (Pattern "\t") l of
     [ name, shape, dose, ratio, temp ] ->
       core name shape dose ratio temp <#> _ { paced = false }
-    [ name, shape, dose, ratio, temp, roaster, roastedOn, roast, seconds, paced, grind ] -> do
-      r <- core name shape dose ratio temp
-      s <- Number.fromString seconds
-      steps <- Number.fromString grind
-      pure r
-        { roaster = roaster
-        , roastedOn = roastedOn
-        , roast = roastNamed roast
-        , seconds = clamp secondsLimits.min secondsLimits.max s
-        , paced = paced == "paced"
-        , grind = clamp grindLimits.min grindLimits.max steps
-        }
+    [ name, shape, dose, ratio, temp, roaster, roastedOn, roast, seconds, paced, grind ] ->
+      beans name shape dose ratio temp roaster roastedOn roast seconds paced grind
+    [ name, shape, dose, ratio, temp, roaster, roastedOn, roast, seconds, paced, grind, soak ] -> do
+      r <- beans name shape dose ratio temp roaster roastedOn roast seconds paced grind
+      held <- Number.fromString soak
+      pure r { soakS = clamp soakLimits.min soakLimits.max held }
     _ -> Nothing
+  beans name shape dose ratio temp roaster roastedOn roast seconds paced grind = do
+    r <- core name shape dose ratio temp
+    s <- Number.fromString seconds
+    steps <- Number.fromString grind
+    pure r
+      { roaster = roaster
+      , roastedOn = roastedOn
+      , roast = roastNamed roast
+      , seconds = clamp secondsLimits.min secondsLimits.max s
+      , paced = paced == "paced"
+      , grind = clamp grindLimits.min grindLimits.max steps
+      }
   -- The first version stored three levels under plainer names.
   roastNamed stored = case stored of
     "Light" -> City
@@ -341,4 +398,5 @@ decode text = catMaybes (map line (filter (_ /= "") (split (Pattern "\n") text))
       , seconds: 30.0
       , paced: true
       , grind: 0.0
+      , soakS: 0.0
       }

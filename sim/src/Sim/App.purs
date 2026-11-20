@@ -100,6 +100,7 @@ component =
         , drag: Nothing
         , phone: 1
         , forecast: forecast Params.defaults (toProfile (NEA.toArray Profiles.all) defaultRecipe) (puckOf defaultRecipe)
+        , advice: Nothing
         }
     , render
     , eval: H.mkEval H.defaultEval

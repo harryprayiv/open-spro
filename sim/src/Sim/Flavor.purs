@@ -3,7 +3,10 @@
 -- | The roast sets where a coffee starts on the wheel and the extraction
 -- | moves it: an under-extracted cup slides back towards the bright,
 -- | sharp side and an over-extracted one slides on towards the roasted
--- | side. This is a model for the simulator, to be corrected by tasting.
+-- | side. How the cup was brewed gives it a second position, across the
+-- | wheel instead of round it: its weight, from sweet and clear to heavy
+-- | in body, and its clarity, which is how distinctly its notes show.
+-- | This is a model for the simulator, to be corrected by tasting.
 module Sim.Flavor
   ( Family
   , families
@@ -11,6 +14,10 @@ module Sim.Flavor
   , noteCount
   , place
   , strength
+  , Character
+  , character
+  , characterNote
+  , shows
   , expected
   , Route(..)
   , route
@@ -24,6 +31,7 @@ import Data.Foldable (foldl)
 import Data.Int (floor, toNumber)
 import Data.Maybe (fromMaybe)
 import Data.Number (abs)
+import Sim.Plant (Brewed)
 import Sim.Recipe (Roast, development, roastLabel, roasts)
 
 type Family = { name :: String, fill :: String, pale :: String, lightText :: Boolean, notes :: Array String }
@@ -71,12 +79,56 @@ strength at note =
   in
     clamp 0.0 1.0 (1.0 - away / 2.5)
 
+-- | The second position of a cup.
+type Character =
+  { -- From -1, sweet and clear, to 1, heavy in body.
+    weight :: Number
+  -- From 0, notes blurred together, to 1, each note distinct.
+  , clarity :: Number
+  }
+
+-- | Weight comes from the pressure the coffee dissolved at and from
+-- | when the heat reached it. Pressure presses oils and fine solids into
+-- | the cup, which is body. A cup whose coffee dissolved while the puck
+-- | was still well under the water temperature is lighter and sweeter.
+-- | Clarity comes from the evenness of the puck.
+character :: Number -> Brewed -> Character
+character waterC b =
+  let
+    pressed = (b.atBar - 8.25) / 2.5
+    lateHeat = ((waterC - b.atC) - 8.0) / 4.0
+  in
+    { weight: clamp (-1.0) 1.0 (0.8 * pressed - 0.2 * lateHeat)
+    , clarity: clamp 0.0 1.0 ((b.evenness - 0.6) / 0.35)
+    }
+
+characterNote :: Character -> String
+characterNote c =
+  let
+    weight
+      | c.weight < -0.2 = "Sweet and clear, light in body."
+      | c.weight > 0.2 = "Heavy in body, with less sweetness and clarity."
+      | otherwise = "Between sweet and heavy."
+    clarity
+      | c.clarity < 0.5 = " The notes are blurred by an uneven puck."
+      | otherwise = ""
+    lever
+      | c.weight > 0.0 = " For more sweetness: a longer soak, a gentler ramp, or a lower peak pressure."
+      | otherwise = " For more body: a shorter soak and full pressure sooner."
+  in
+    weight <> clarity <> lever
+
+-- | How strongly a note shows in a cup of this clarity that lands at
+-- | `at`. A blurred cup shows only the note it lands on, and faintly.
+shows :: Character -> Number -> Int -> Number
+shows c at note = strength at note * (0.45 + 0.55 * c.clarity)
+
 -- | The notes a cup should show, strongest first.
-expected :: Roast -> Number -> Array { note :: Int, name :: String, strength :: Number }
-expected roast extracted =
+expected :: Roast -> Number -> Character -> Array { note :: Int, name :: String, strength :: Number }
+expected roast extracted c =
   let
     at = place roast extracted
-    all = mapWithIndex (\i name -> { note: i, name, strength: strength at i }) notes
+    all = mapWithIndex (\i name -> { note: i, name, strength: shows c at i }) notes
   in
     sortBy (comparing (negate <<< _.strength)) (filter (\n -> n.strength > 0.05) all)
 
@@ -113,7 +165,7 @@ routeNote roast note found =
   in
     case found of
       Already -> wanted <> ": this cup should already show it."
-      ExtractMore -> wanted <> ": within reach of these beans. Extract a little more: grind finer, brew hotter, or run a longer ratio."
+      ExtractMore -> wanted <> ": within reach of these beans. Extract a little more: grind finer, brew hotter, soak longer, or run a longer ratio."
       ExtractLess -> wanted <> ": within reach of these beans. Extract a little less: grind coarser, brew cooler, or stop sooner."
       OtherRoast other more ->
         wanted <> ": out of reach for a " <> roastLabel roast <> " roast. It sits nearest a " <> roastLabel other

@@ -12,6 +12,8 @@ module Sim.Update
   , chooseShape
   , chooseRoast
   , findGrind
+  , askAdvice
+  , takeAdvice
   , defaultLocks
   , isLocked
   , toggleLock
@@ -35,14 +37,15 @@ import Data.Int (toNumber)
 import Data.Number (abs)
 import Data.Array.NonEmpty as NEA
 import Data.Either (Either(..))
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, isNothing)
 import Sim.Controller (Event(..), shotInProgress)
+import Sim.Advice (advise)
 import Sim.Forecast (forecast)
 import Sim.Model (Field(..), State)
 import Sim.Params (Params)
 import Sim.Params as Params
 import Sim.Profiles as Profiles
-import Sim.Recipe (Limits, Recipe, Roast, doseLimits, grindLimits, puckOf, ratioLimits, secondsLimits, targetGrams, targetLimits, tempLimits, toProfile, withRoastDefaults, withTarget)
+import Sim.Recipe (Limits, Recipe, Roast, doseLimits, grindLimits, puckOf, ratioLimits, secondsLimits, soakLimits, targetGrams, targetLimits, tempLimits, toProfile, withRoastDefaults, withTarget)
 import Sim.Shapes as Shapes
 import Sim.Types (MachineState(..), PowerMode(..), Profile, ShotState(..))
 import Sim.World (paramsOf, send, setParams, stepMany, warmUp)
@@ -91,6 +94,7 @@ limitsOf = case _ of
   Temp -> tempLimits
   Seconds -> secondsLimits
   Grind -> grindLimits
+  Soak -> soakLimits
 
 valueOf :: Field -> Recipe -> Number
 valueOf field r = case field of
@@ -100,6 +104,7 @@ valueOf field r = case field of
   Temp -> r.tempC
   Seconds -> r.seconds
   Grind -> r.grind
+  Soak -> r.soakS
 
 fieldKey :: Field -> String
 fieldKey = case _ of
@@ -109,6 +114,7 @@ fieldKey = case _ of
   Temp -> "recipe.temp"
   Seconds -> "recipe.seconds"
   Grind -> "recipe.grind"
+  Soak -> "recipe.soak"
 
 -- | Ratio and weight in the cup are one setting seen two ways, so they
 -- | share a lock.
@@ -159,6 +165,7 @@ chooseRoast roast st =
       , ratio = if free Ratio then start.ratio else now.ratio
       , seconds = if free Seconds then start.seconds else now.seconds
       , grind = if free Grind then start.grind else now.grind
+      , soakS = if free Soak then start.soakS else now.soakS
       , profileIndex = if now.profileIndex < builtInCount then start.profileIndex else now.profileIndex
       }
   in
@@ -179,6 +186,7 @@ setField field raw st =
           Temp -> r { tempC = value }
           Seconds -> r { seconds = value }
           Grind -> r { grind = value }
+          Soak -> r { soakS = value }
       )
       st
 
@@ -253,9 +261,39 @@ resetParams = changeParams (const Params.defaults)
 ------------------------------------------------------------
 
 -- | Run the present recipe on a warm copy of the present machine.
+-- | Advice that was worked out for another recipe, or for a machine
+-- | that forecast this one differently, is dropped.
 refreshForecast :: State -> State
 refreshForecast st =
-  st { forecast = forecast (paramsOf st.world) (toProfile (allShapes st) st.recipe) (puckOf st.recipe) }
+  let
+    now = forecast (paramsOf st.world) (toProfile (allShapes st) st.recipe) (puckOf st.recipe)
+    still advice = advice.from == st.recipe && now.seconds == st.forecast.seconds && now.extracted == st.forecast.extracted
+  in
+    st { forecast = now, advice = st.advice >>= \advice -> if still advice then Just advice else Nothing }
+
+-- | Work out what to change to mend the forecast cup, leaving alone
+-- | every setting the barista holds.
+askAdvice :: State -> State
+askAdvice st =
+  let
+    free =
+      { grind: not (isLocked st Grind)
+      , temp: not (isLocked st Temp)
+      , soak: not (isLocked st Soak)
+      , seconds: not (isLocked st Seconds)
+      }
+    found = advise (paramsOf st.world) (allShapes st) free st.recipe st.forecast
+  in
+    st
+      { advice = found
+      , notice = if isNothing found then "No change to the grind, the water or the soak would mend this cup. Free a held setting, or change the dose, the yield or the shape." else ""
+      }
+
+-- | Make the change the advice names.
+takeAdvice :: State -> State
+takeAdvice st = case st.advice of
+  Just advice -> applyRecipe advice.recipe st { draft = Nothing }
+  Nothing -> st
 
 ------------------------------------------------------------
 -- Time

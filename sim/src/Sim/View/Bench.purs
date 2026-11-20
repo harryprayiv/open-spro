@@ -1,5 +1,5 @@
 -- | The profile designer, the scope and the settings.
-module Sim.View.Bench (designer, forecastLine, scope, settings) where
+module Sim.View.Bench (designer, forecastLine, adviceLine, scope, settings) where
 
 import Prelude
 
@@ -7,7 +7,7 @@ import Data.Array (index, length, mapWithIndex, take)
 import Data.String (joinWith)
 import Data.Array.NonEmpty as NEA
 import Data.Int (toNumber)
-import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
@@ -18,13 +18,14 @@ import Sim.Flavor as Flavor
 import Sim.Model (Action(..), Field(..), State)
 import Sim.Params (Entry, Group(..))
 import Sim.Params as Params
-import Sim.Recipe (targetGrams)
+import Sim.Recipe (shownStep, targetGrams, toProfile)
 import Sim.Shapes as Shapes
 import Sim.Types (Curve(..), ShotState(..), Step, StepMode(..))
-import Sim.Update (baseShape, changeParams, deleteShape, editGroupBase, editShape, editStepTemp, isCustom, isLocked, resetParams, tempShift)
+import Sim.Advice as Advice
+import Sim.Update (allShapes, askAdvice, baseShape, changeParams, deleteShape, editGroupBase, editShape, editStepTemp, isCustom, isLocked, resetParams, takeAdvice, tempShift)
 import Sim.View.Plots (forecastPlot, scopePlot)
 import Sim.View.Wheel (wheel)
-import Sim.View.Widgets (button, chosen, cls, legend, n1, numBox, row, segmented, slider, table)
+import Sim.View.Widgets (button, chosen, cls, legend, n1, n2, numBox, row, segmented, slider, table)
 import Sim.World (paramsOf, sensors)
 
 ------------------------------------------------------------
@@ -44,21 +45,39 @@ forecastLine st =
     held = isLocked st Seconds || isLocked st Ratio
     grind =
       -- One piece of advice at a time: the cup first, then the grind.
+      -- When the machine has found a change that mends the cup, the
+      -- advice line under this one names it.
       if cup /= Cup.Balanced then
-        (if held then " The held time or yield does not suit this roast: free one and turn the drum again." else "")
+        (if held && isNothing st.advice then " The held time or yield does not suit this roast: free one and turn the drum again." else "")
       else if not f.paceSpent then ""
       else if f.paceBar > 0.0 then " Pacing is adding all the pressure it may: grind coarser."
       else " Pacing is taking off all the pressure it may: grind finer."
     cup = Cup.taste f.extracted
+    good = cup == Cup.Balanced && not (Cup.channeled f.brewed)
     text = case f.refused of
       Just reason -> "The machine would refuse this shot: " <> reason <> "."
       Nothing ->
         if reached then
-          "Forecast: " <> n1 f.grams <> " g in " <> n1 f.seconds <> " s" <> wanted <> ", peak " <> n1 f.peakBar <> " bar. " <> Cup.tasteNote cup <> grind
+          "Forecast: " <> n1 f.grams <> " g in " <> n1 f.seconds <> " s" <> wanted <> ", peak " <> n1 f.peakBar <> " bar, puck evenness " <> n2 f.brewed.evenness <> ". " <> Cup.cupNote f.extracted f.brewed <> grind
         else
           "Forecast: the shot does not reach its weight. It ends after " <> n1 f.seconds <> " s with " <> n1 f.grams <> " g."
   in
-    HH.p [ cls (if reached && cup == Cup.Balanced && not f.paceSpent then "forecast" else "forecast bad") ] [ HH.text text ]
+    HH.p [ cls (if reached && good && not f.paceSpent then "forecast" else "forecast bad") ] [ HH.text text ]
+
+-- | A key that asks the machine what it would change to mend the
+-- | forecast cup, and once asked, the answer with a key that makes the
+-- | change.
+adviceLine :: forall w. State -> Array (HH.HTML w Action)
+adviceLine st = case st.advice of
+  Nothing ->
+    if Advice.needed st.forecast then [ HH.div [ cls "choices" ] [ button "Advise" (Change askAdvice) ] ]
+    else []
+  Just advice ->
+    [ HH.p [ cls "forecast advice" ]
+        [ HH.text ("Advice: " <> advice.text <> " ")
+        , button "Do that" (Change takeAdvice)
+        ]
+    ]
 
 -- | A forecast of the shot with each step marked on it, and a list of
 -- | one-line steps. One step at a time is open for editing, and the
@@ -71,6 +90,10 @@ designer st =
     steps = NEA.toArray shape.steps
     count = length steps
     open = clamp 0 (count - 1) st.stepOpen
+    -- The shot as the machine runs it has the recipe's soak in it, so
+    -- the plot takes its step names from there.
+    run = toProfile (allShapes st) st.recipe
+    made = Flavor.character st.recipe.tempC st.forecast.brewed
   in
     [ HH.div [ cls "field wide" ]
         [ HH.label_ [ HH.text "Name" ]
@@ -91,16 +114,17 @@ designer st =
     , HH.div [ cls "design-top" ]
         [ forecastPlot
             { forecast: st.forecast
-            , names: map _.name steps
-            , open
+            , names: map _.name (NEA.toArray run.steps)
+            , open: shownStep st.recipe open
             , goalSeconds: if st.recipe.paced then Just st.recipe.seconds else Nothing
             , goalGrams: targetGrams st.recipe
             }
-        , wheel { place: Flavor.place st.recipe.roast st.forecast.extracted, wanted: st.wanted }
+        , wheel { place: Flavor.place st.recipe.roast st.forecast.extracted, character: made, wanted: st.wanted }
         ]
     , HH.p [ cls "note" ]
         [ HH.text
-            ( "This cup: " <> joinWith ", " (map _.name (take 4 (Flavor.expected st.recipe.roast st.forecast.extracted))) <> "."
+            ( "This cup: " <> joinWith ", " (map _.name (take 4 (Flavor.expected st.recipe.roast st.forecast.extracted made))) <> ". "
+                <> Flavor.characterNote made
                 <> case st.wanted of
                   Just note -> " " <> Flavor.routeNote st.recipe.roast note (Flavor.route st.recipe.roast st.forecast.extracted note)
                   Nothing -> ""
@@ -114,7 +138,10 @@ designer st =
         , legend "goal" "where the recipe wants to end"
         ]
     , forecastLine st
-    , HH.div [ cls "steps" ] (mapWithIndex (stepRow st open) steps)
+    ]
+      <> adviceLine st
+      <>
+    [ HH.div [ cls "steps" ] (mapWithIndex (stepRow st open) steps)
     , HH.div [ cls "section" ]
         ( [ button "Add a step" (Change \s -> (editShape Shapes.addStep s) { stepOpen = count }) ]
             <> (if count > 1 then [ button "Remove this step" (Change (editShape (Shapes.removeStep open))) ] else [])

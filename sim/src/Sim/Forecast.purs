@@ -13,7 +13,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Number (abs)
 import Sim.Controller (Event(..), shotInProgress)
 import Sim.Params (Params)
-import Sim.Plant (Puck)
+import Sim.Plant (Brewed, Puck, brewed)
 import Sim.Types (MachineState(..), PowerMode(..), Profile, ShotState)
 import Sim.World (Sample, World, dt, send, stepWorld, warmUp, worldWith)
 
@@ -31,6 +31,9 @@ type Forecast =
   , paceSpent :: Boolean
   -- The share of what the coffee can give up that reached the cup.
   , extracted :: Number
+  -- How the cup was brewed: how even the puck stayed, and the bed
+  -- temperature and pressure the coffee dissolved at.
+  , brewed :: Brewed
   , outcome :: Maybe ShotState
   -- Why the machine would not start the shot, if it would not.
   , refused :: Maybe String
@@ -54,7 +57,7 @@ forecast params profile puck =
   in
     case start of
       Left reason ->
-        { samples: [], stepStarts: [], seconds: 0.0, grams: 0.0, peakBar: 0.0, paceBar: 0.0, paceSpent: false, extracted: 0.0, outcome: Nothing, refused: Just reason, violations: [] }
+        { samples: [], stepStarts: [], seconds: 0.0, grams: 0.0, peakBar: 0.0, paceBar: 0.0, paceSpent: false, extracted: 0.0, brewed: { atC: 0.0, atBar: 0.0, evenness: 1.0 }, outcome: Nothing, refused: Just reason, violations: [] }
       Right begun ->
         let
           done = runUntil (params.config.shotTimeout + 5.0) (\w -> not (shotInProgress w.ctl)) begun
@@ -78,6 +81,7 @@ forecast params profile puck =
                       || (paceBar > 0.3 && peak >= params.config.brewPressureLimitBar - 1.05)
                   )
           , extracted: done.plant.extracted
+          , brewed: brewed done.plant
           , outcome: if length done.ctl.history > 0 then map _.state shot else Nothing
           , refused: Nothing
           , violations: done.violations

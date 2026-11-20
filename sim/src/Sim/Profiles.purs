@@ -62,8 +62,10 @@ linePrebrew =
       , targetBar: Nothing
       , targetMlPerS: Nothing
       , maxDuration: 30.0
+      -- The step ends when the wet puck pushes back, or at the first
+      -- drops from a puck too open to push back at line pressure.
       , exitAboveBar: Just 2.0
-      , exitAboveGrams: Nothing
+      , exitAboveGrams: Just 2.0
       }
       [ { name: "brew"
         , mode: Pressure
