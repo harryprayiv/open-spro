@@ -1,5 +1,5 @@
 {
-  description = "Open espresso machine: firmware, service, UI, CAD and PCB tooling";
+  description = "Open-Spro: firmware, service, UI, CAD and PCB tooling";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
