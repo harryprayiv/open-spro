@@ -193,8 +193,8 @@ front v =
     top = 392.0 - 36.0 * fraction
     -- stream: half its width, how far it spreads across the basket and
     -- a slight side-to-side wander
-    half = clamp 1.0 4.0 (0.8 + v.flowMlPerS * 0.7)
-    spread = clamp 10.0 30.0 (12.0 + v.flowMlPerS * 6.0)
+    half = clamp 1.5 5.5 (1.2 + v.flowMlPerS * 0.9)
+    spread = clamp 14.0 44.0 (16.0 + v.flowMlPerS * 9.0)
     sway = if phase < 0.5 then 0.0 else 0.5
     inset y = (394.0 - y) * 6.0 / 42.0
     coffee =
@@ -206,8 +206,8 @@ front v =
         drop = (toNumber n + phase) * 9.0
       in
         circle
-          [ at "cx" (num (338.0 + (if n `mod` 2 == 0 then -3.0 else 3.0)))
-          , at "cy" (num (386.0 + drop))
+          [ at "cx" (num (384.0 + (if n `mod` 2 == 0 then -3.0 else 3.0)))
+          , at "cy" (num (378.0 + drop))
           , at "r" (num (3.0 + drop / 5.0))
           , fill "#ffffff"
           , at "stroke" "#b9bec4"
@@ -263,18 +263,21 @@ front v =
             ]
           -- group and portafilter
           <> faced "alu" "#b9bec4" [ at "x" "150", at "y" "276", at "width" "100", at "height" "22", at "rx" "4" ]
-          <> faced "wood" "#3a2415" [ at "x" "86", at "y" "310", at "width" "80", at "height" "12", at "rx" "6" ]
+          -- the portafilter: a long wooden handle, a wide ring and the
+          -- underside of a bottomless basket
+          <> faced "wood" "#3a2415" [ at "x" "52", at "y" "311", at "width" "96", at "height" "16", at "rx" "8" ]
           <>
-            -- a bottomless portafilter: a wide ring with the underside of
-            -- the basket showing
-            [ rect [ at "x" "156", at "y" "298", at "width" "88", at "height" "10", fill steelDark ]
-            , rect [ at "x" "154", at "y" "308", at "width" "92", at "height" "13", at "rx" "3", fill "#3a3d42" ]
-            , path [ at "d" "M162,321 L238,321 Q236,327 228,328 L172,328 Q164,327 162,321 Z", fill "#c9ced3", at "stroke" "#6f757b", at "stroke-width" "1" ]
-            -- steam wand
+            [ rect [ at "x" "142", at "y" "298", at "width" "116", at "height" "13", fill steelDark ]
+            , rect [ at "x" "138", at "y" "311", at "width" "124", at "height" "17", at "rx" "4", fill "#3a3d42" ]
+            , path [ at "d" "M148,328 L252,328 Q250,337 240,338 L160,338 Q150,337 148,328 Z", fill "#c9ced3", at "stroke" "#6f757b", at "stroke-width" "1" ]
+            -- steam wand: out of the side of the body on a ball joint,
+            -- then down beside the drip tray
             , path
-                [ at "d" "M330,276 L338,300 L338,380", fill "none"
-                , at "stroke" "#c9ced3", at "stroke-width" "5", at "stroke-linecap" "round"
+                [ at "d" "M336,236 L368,236 Q384,236 384,252 L384,366", fill "none"
+                , at "stroke" "#c9ced3", at "stroke-width" "7", at "stroke-linecap" "round"
                 ]
+            , circle [ at "cx" "338", at "cy" "236", at "r" "9", fill "#b08d57", at "stroke" "#5c4520", at "stroke-width" "1" ]
+            , rect [ at "x" "379", at "y" "362", at "width" "10", at "height" "12", at "rx" "3", fill "#8b9197" ]
             ]
           -- drip tray, scale platform, cup
           <> faced "alu" steelDark [ at "x" "80", at "y" "400", at "width" "240", at "height" "26", at "rx" "4" ]
@@ -295,14 +298,14 @@ front v =
                 -- fall as a single column that fattens with the flow
                 [ path
                     [ at "d"
-                        ( "M" <> num (200.0 - spread) <> ",328 Q" <> num (200.0 - half) <> ",336 " <> num (200.0 - half + sway) <> ",350 L"
-                            <> num (200.0 + half + sway) <> ",350 Q" <> num (200.0 + half) <> ",336 " <> num (200.0 + spread) <> ",328 Z"
+                        ( "M" <> num (200.0 - spread) <> ",338 Q" <> num (200.0 - half) <> ",346 " <> num (200.0 - half + sway) <> ",358 L"
+                            <> num (200.0 + half + sway) <> ",358 Q" <> num (200.0 + half) <> ",346 " <> num (200.0 + spread) <> ",338 Z"
                         )
                     , fill v.streamColour
                     ]
                 , rect
-                    [ at "x" (num (200.0 - half + sway)), at "y" "349"
-                    , at "width" (num (half * 2.0)), at "height" (num (max 0.0 (top - 349.0))), fill v.streamColour
+                    [ at "x" (num (200.0 - half + sway)), at "y" "357"
+                    , at "width" (num (half * 2.0)), at "height" (num (max 0.0 (top - 357.0))), fill v.streamColour
                     ]
                 ]
               else []

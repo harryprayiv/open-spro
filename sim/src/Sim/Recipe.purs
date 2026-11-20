@@ -22,6 +22,8 @@ module Sim.Recipe
   , targetGrams
   , withTarget
   , toProfile
+  , house
+  , samples
   , builtIn
   , encode
   , decode
@@ -228,9 +230,44 @@ toProfile shapes r =
       , steps = map (\step -> step { targetC = step.targetC + shift }) base.steps
       }
 
+-- | The house standard: 22 g in, 44 g out, 30 seconds, on a Full City
+-- | roast. Everything else is a departure from this.
+house :: Recipe
+house =
+  { name: "House espresso", roaster: "", roastedOn: "", roast: FullCity
+  , profileIndex: 0, doseG: 22.0, ratio: 2.0, tempC: 93.0, seconds: 30.0, paced: true, grind: 2.5
+  }
+
+-- | The beans offered on the brew tab: the house standard, the three
+-- | everyday roasts, the two ends of the scale, and two that show how a
+-- | cup is pushed past balance towards an extreme on purpose.
+samples :: Array Recipe
+samples =
+  [ house
+  , at City "City"
+  , at CityPlus "City+"
+  , at FullCity "Full City"
+  , at Cinnamon "Lightest: Cinnamon"
+  , at Italian "Darkest: Italian"
+  -- Under-extracted on purpose: coarser, cooler and shorter slides the
+  -- cup back towards flowers and citrus, at the cost of sourness.
+  , (at City "City, pushed bright") { grind = 3.5, tempC = 91.0, ratio = 1.6, seconds = 24.0, profileIndex = 0 }
+  -- Over-extracted on purpose: finer, hotter and longer slides the cup
+  -- on towards cocoa and spice, at the cost of bitterness.
+  , (at FullCity "Full City, pushed deep") { grind = 1.0, tempC = 96.0, ratio = 2.6, seconds = 40.0 }
+  ]
+  where
+  -- The roast's starting point at the house dose. The grind moves 2.5
+  -- steps coarser, as the house standard's does, for the larger dose.
+  at roast name =
+    let
+      r = withRoastDefaults house { name = name, roast = roast }
+    in
+      r { grind = clamp grindLimits.min grindLimits.max (r.grind + 2.5) }
+
 builtIn :: Array Recipe
 builtIn =
-  [ withRoastDefaults blank { name = "House espresso", roast = FullCity }
+  [ withRoastDefaults blank { name = "Full City roast", roast = FullCity }
   , withRoastDefaults blank { name = "City roast", roast = City }
   , withRoastDefaults blank { name = "French roast", roast = French }
   ]

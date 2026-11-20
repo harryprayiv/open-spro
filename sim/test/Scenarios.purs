@@ -341,6 +341,11 @@ beans = do
     expect (Recipe.roastLabel roast <> " lands a balanced cup on its starting point") (Cup.taste f.extracted == Cup.Balanced)
     expect (Recipe.roastLabel roast <> " lands within 3 s of its time") (abs (f.seconds - r.seconds) < 3.0)
     expect (Recipe.roastLabel roast <> " breaks no invariant") (f.violations == [] && f.outcome == Just StoppedByWeight)
+  let standard = run Recipe.house { paced = false }
+  log ("  house standard, unpaced: " <> n1 standard.grams <> " g in " <> n1 standard.seconds <> " s, extracted " <> toStringWith (fixed 2) standard.extracted)
+  expect "the house standard is 22 g in and 44 g out" (Recipe.house.doseG == 22.0 && Recipe.targetGrams Recipe.house == 44.0)
+  expect "the house standard lands within 1.5 s of 30 s without pacing" (abs (standard.seconds - 30.0) < 1.5)
+  expect "the house standard is balanced" (Cup.taste standard.extracted == Cup.Balanced)
   let starts = map start Recipe.roasts
   let falling pick = and (zipWith (\a b -> pick a >= pick b) starts (drop 1 starts))
   expect "a darker roast never starts hotter, longer or finer than a lighter one"

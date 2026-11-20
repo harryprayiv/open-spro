@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <!-- Added to a phone's home screen, the page opens without browser chrome. -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="theme-color" content="#17120f">
     <title>Espresso simulator</title>
     <style>
       /* The design language of the kissaten press packet: flat paper and
@@ -67,10 +72,6 @@
       .pane-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.6rem 0.8rem 0.5rem; border-bottom: 2px solid var(--rule); }
       /* Section labels number themselves, as the packet's pages do. */
       .pane-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0.4rem 0.9rem 0.9rem; counter-reset: label; }
-      @media (max-width: 60rem) {
-        .page { height: auto; min-height: 100vh; }
-        .desk, .desk.with-bench { grid-template-columns: 1fr; }
-        .pane-body { overflow: visible; }
       }
 
       /* Machine pane: the front beside the inside, the shot under both.
@@ -209,6 +210,68 @@
       .param label { font-size: 0.8rem; }
       .param.changed label { color: var(--burnt); font-weight: 700; }
       .param.changed .exact { border-bottom-color: var(--orange); }
+
+      /* The roast drum: five faces, the chosen one in the window and its
+         neighbours turning away above and below. */
+      .bean { display: grid; grid-template-columns: 9.5rem 1fr; gap: 0.9rem; align-items: center; margin-top: 0.5rem; }
+      .bean .fields { margin: 0; gap: 0.2rem; }
+      .drum { display: grid; perspective: 22rem; border-top: 2px solid var(--rule); border-bottom: 2px solid var(--rule); background: linear-gradient(var(--line), transparent 30%, transparent 70%, var(--line)); }
+      .drum-face { height: 1.45rem; padding: 0; border: 0; background: transparent; color: var(--ink); text-align: center; letter-spacing: 0.14em; transition: color 0.15s ease; }
+      .drum-face:hover { background: transparent; color: var(--burnt); }
+      .drum-face.blank { display: block; }
+      .drum-face.at0, .drum-face.at4 { transform: rotateX(62deg) scale(0.82); opacity: 0.3; font-size: 0.62rem; }
+      .drum-face.at0 { transform-origin: bottom; }
+      .drum-face.at4 { transform-origin: top; }
+      .drum-face.at1, .drum-face.at3 { transform: rotateX(38deg) scale(0.92); opacity: 0.6; font-size: 0.68rem; }
+      .drum-face.at1 { transform-origin: bottom; }
+      .drum-face.at3 { transform-origin: top; }
+      .drum-face.at2 { height: 2rem; font-size: 0.84rem; font-weight: 700; color: var(--on-ink); background: var(--on); cursor: default; }
+
+      /* Held settings. */
+      .field { grid-template-columns: 6.4rem 1fr 4.2rem 3.2rem 2.9rem; }
+      .hold { padding: 0.2rem 0; font-size: 0.6rem; letter-spacing: 0.1em; border-color: var(--line); color: var(--muted); }
+      .hold.active { background: var(--burnt); border-color: var(--burnt); color: #ffffff; }
+      .held-rule { height: 2px; background: var(--line); }
+      .held-value { padding: 0.36rem 0.5rem; font-weight: 700; }
+
+      /* The designer's shot and the cup it makes, side by side. */
+      .design-top { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 0.6rem; align-items: center; }
+      .design-top .wheel { margin: 0; }
+
+      /* Pane widths come from dragging the gutters between them. */
+      .desk { grid-template-columns: minmax(12rem, 1fr) 0.5rem var(--controls, 35rem); gap: 0; }
+      .desk.with-bench { grid-template-columns: minmax(12rem, 1fr) 0.5rem var(--controls, 35rem) 0.5rem var(--bench, 26rem); }
+      .gutter { cursor: col-resize; background: linear-gradient(90deg, transparent 42%, var(--line) 42%, var(--line) 58%, transparent 58%); }
+      .gutter:hover, .desk.dragging .gutter { background: linear-gradient(90deg, transparent 30%, var(--orange) 30%, var(--orange) 70%, transparent 70%); }
+      .desk.dragging { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+      .phone-bar { display: none; }
+
+      /* Inside: a valve's gate lies along the pipe when open and swings
+         across it when closed, and a live element pulses. */
+      .gate .gate-blade { transform: rotate(90deg); transition: transform 0.45s cubic-bezier(0.3, 1.5, 0.5, 1); }
+      .gate.open .gate-blade { transform: rotate(0deg); }
+      .element.on { animation: glow 0.9s ease-in-out infinite alternate; }
+      @keyframes glow { from { stroke: #ff5a1f; stroke-width: 2.5; } to { stroke: #ffb347; stroke-width: 4; } }
+
+      /* Phone: one pane at a time, chosen from a bar at the bottom. The
+         top bar keeps only the state and the alarm. */
+      @media (max-width: 48rem) {
+        .page { height: 100dvh; min-height: 0; }
+        .top { padding: 0.4rem 0.6rem 0.4rem 2.6rem; gap: 0.3rem 0.5rem; background-size: 1.5rem; background-position: 0.5rem center; padding-top: max(0.4rem, env(safe-area-inset-top)); }
+        .plate, .top > .chip:nth-of-type(2), .top > .chip:nth-of-type(3), .top > button.active, .top > button:not(.alarm):not(.theme-switch) { display: none; }
+        .desk, .desk.with-bench { display: block; padding: 0.4rem; overflow: hidden; }
+        .gutter, .desk .pane { display: none; }
+        .desk.phone-0 .machine-pane, .desk.phone-1 .controls-pane, .desk.phone-2 .bench-pane { display: flex; height: 100%; }
+        .pane-body { overflow-y: auto; }
+        .views { grid-template-columns: 1fr; }
+        .bean { grid-template-columns: 8rem 1fr; gap: 0.6rem; }
+        .field { grid-template-columns: 5rem 1fr 3.8rem 2.6rem 2.8rem; gap: 0.35rem; }
+        .design-top { grid-template-columns: 1fr; }
+        button { padding: 0.65rem 0.7rem; }
+        .phone-bar { flex: none; display: grid; grid-template-columns: repeat(3, 1fr); background: #17120f; border-top: 2px solid #264a3a; padding-bottom: env(safe-area-inset-bottom); }
+        .phone-bar button { border: 0; background: transparent; color: #f4eedf; padding: 0.9rem 0; }
+        .phone-bar button.active { background: #bc6a14; color: #ffffff; }
+      }
     </style>
   </head>
   <body>

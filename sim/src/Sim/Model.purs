@@ -17,6 +17,7 @@ import Sim.Plant (Disturbance)
 import Sim.Recipe (Recipe)
 import Sim.Types (Profile)
 import Sim.World (World)
+import Web.UIEvent.MouseEvent (MouseEvent)
 
 -- | The recipe settings that have a slider.
 data Field = Dose | Ratio | Target | Temp | Seconds | Grind
@@ -47,6 +48,15 @@ type State =
   -- The note on the coffee map the barista is after, counted round the
   -- wheel from jasmine.
   , wanted :: Maybe Int
+  -- The recipe settings the barista holds fixed, by key. The machine's
+  -- suggestions leave these alone.
+  , locks :: Array String
+  -- Widths of the controls and bench panes in pixels, set by dragging
+  -- the gutters, and the drag in progress.
+  , sizes :: { controls :: Number, bench :: Number }
+  , drag :: Maybe { gutter :: Int, x :: Int }
+  -- The pane a phone shows: 0 machine, 1 controls, 2 bench.
+  , phone :: Int
   -- What the present recipe would do on the present machine. It is
   -- worked out again whenever the recipe, a shape or a parameter
   -- changes, and not on every frame.
@@ -69,3 +79,6 @@ data Action
   | SavePreset
   | DeletePreset String
   | ToggleTheme
+  | GutterDown Int MouseEvent
+  | GutterMove MouseEvent
+  | GutterUp

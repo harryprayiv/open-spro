@@ -981,3 +981,8 @@ surface PaceLoop {
 --     whether it should be on by default, is not decided.
 -- 12. Roast, grind and extraction are not in this spec. They belong to
 --     the simulated puck and to the recipe the page keeps.
+-- 13. The simulated puck does not model pre-infusion beyond filling the
+--     dry puck. How gently it was wetted, how long it soaked and whether
+--     it channeled have no effect on extraction or flow. Until they do,
+--     nothing here or in the simulator can say what a pre-brew step is
+--     worth, and the recipe advice ignores it.

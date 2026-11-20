@@ -3,7 +3,8 @@ module Sim.View.Bench (designer, forecastLine, scope, settings) where
 
 import Prelude
 
-import Data.Array (index, length, mapWithIndex)
+import Data.Array (index, length, mapWithIndex, take)
+import Data.String (joinWith)
 import Data.Array.NonEmpty as NEA
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
@@ -13,14 +14,16 @@ import Halogen.HTML.Properties as HP
 import Sim.Controller (heaterDrawWatts)
 import Sim.Cup as Cup
 import Sim.Curve as Curve
-import Sim.Model (Action(..), State)
+import Sim.Flavor as Flavor
+import Sim.Model (Action(..), Field(..), State)
 import Sim.Params (Entry, Group(..))
 import Sim.Params as Params
 import Sim.Recipe (targetGrams)
 import Sim.Shapes as Shapes
 import Sim.Types (Curve(..), ShotState(..), Step, StepMode(..))
-import Sim.Update (baseShape, changeParams, deleteShape, editGroupBase, editShape, editStepTemp, isCustom, resetParams, tempShift)
+import Sim.Update (baseShape, changeParams, deleteShape, editGroupBase, editShape, editStepTemp, isCustom, isLocked, resetParams, tempShift)
 import Sim.View.Plots (forecastPlot, scopePlot)
+import Sim.View.Wheel (wheel)
 import Sim.View.Widgets (button, chosen, cls, legend, n1, numBox, row, segmented, slider, table)
 import Sim.World (paramsOf, sensors)
 
@@ -38,8 +41,12 @@ forecastLine st =
     reached = f.outcome == Just StoppedByWeight
     -- Pacing at its limit means pressure cannot make up the difference,
     -- and the grinder has to.
+    held = isLocked st Seconds || isLocked st Ratio
     grind =
-      if not f.paceSpent then ""
+      -- One piece of advice at a time: the cup first, then the grind.
+      if cup /= Cup.Balanced then
+        (if held then " The held time or yield does not suit this roast: free one and turn the drum again." else "")
+      else if not f.paceSpent then ""
       else if f.paceBar > 0.0 then " Pacing is adding all the pressure it may: grind coarser."
       else " Pacing is taking off all the pressure it may: grind finer."
     cup = Cup.taste f.extracted
@@ -79,13 +86,26 @@ designer st =
               else "Built in. Changing anything makes a copy and edits the copy."
             )
         ]
-    , forecastPlot
-        { forecast: st.forecast
-        , names: map _.name steps
-        , open
-        , goalSeconds: if st.recipe.paced then Just st.recipe.seconds else Nothing
-        , goalGrams: targetGrams st.recipe
-        }
+    -- The shot beside the cup it makes, so a change to the curve shows
+    -- at once in where the cup lands.
+    , HH.div [ cls "design-top" ]
+        [ forecastPlot
+            { forecast: st.forecast
+            , names: map _.name steps
+            , open
+            , goalSeconds: if st.recipe.paced then Just st.recipe.seconds else Nothing
+            , goalGrams: targetGrams st.recipe
+            }
+        , wheel { place: Flavor.place st.recipe.roast st.forecast.extracted, wanted: st.wanted }
+        ]
+    , HH.p [ cls "note" ]
+        [ HH.text
+            ( "This cup: " <> joinWith ", " (map _.name (take 4 (Flavor.expected st.recipe.roast st.forecast.extracted))) <> "."
+                <> case st.wanted of
+                  Just note -> " " <> Flavor.routeNote st.recipe.roast note (Flavor.route st.recipe.roast st.forecast.extracted note)
+                  Nothing -> ""
+            )
+        ]
     , HH.p [ cls "legend" ]
         [ legend "bar" "pressure, bar (0 to 12)"
         , legend "target" "pressure asked for"

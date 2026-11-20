@@ -74,16 +74,30 @@ alarm x y content =
     ]
     content
 
+-- | A valve: a body with a round window, and in the window a gate that
+-- | lies along the pipe when the valve is open and swings across it when
+-- | the valve is closed. The swing is animated by the stylesheet.
 valve :: forall w i. Number -> Number -> String -> Boolean -> Boolean -> HH.HTML w i
 valve x y name open broken =
   g []
     [ rect
         [ at "x" (num x), at "y" (num y), at "width" "40", at "height" "22", at "rx" "4"
-        , at "fill" (if broken then bad else if open then "#2c8a57" else "#6b7076")
+        , at "fill" (if broken then bad else if open then "#264a3a" else "#6b7076")
         ]
+    , circle
+        [ at "cx" (num (x + 11.0)), at "cy" (num (y + 11.0)), at "r" "8.5"
+        , at "fill" "#f4eedf", at "stroke" "#17120f", at "stroke-width" "1.5"
+        ]
+    , g [ at "class" (if open then "gate open" else "gate"), at "transform" ("translate(" <> num (x + 11.0) <> "," <> num (y + 11.0) <> ")") ]
+        [ line
+            [ at "class" "gate-blade", at "x1" "-7", at "y1" "0", at "x2" "7", at "y2" "0"
+            , at "stroke" (if broken then bad else if open then "#4d8a60" else "#bc6a14"), at "stroke-width" "4", at "stroke-linecap" "round"
+            ]
+        ]
+    , circle [ at "cx" (num (x + 11.0)), at "cy" (num (y + 11.0)), at "r" "1.8", at "fill" "#17120f" ]
     , label
-        [ at "x" (num (x + 20.0)), at "y" (num (y + 14.0)), at "text-anchor" "middle"
-        , at "font-size" "8", at "fill" "#ffffff"
+        [ at "x" (num (x + 29.5)), at "y" (num (y + 13.5)), at "text-anchor" "middle"
+        , at "font-size" "5.5", at "fill" "#ffffff"
         ]
         name
     , tag (x + 20.0) (y + 32.0) (if open then "open" else "closed")
@@ -93,6 +107,7 @@ element :: forall w i. Number -> Number -> Boolean -> HH.HTML w i
 element x y on =
   path
     [ at "d" ("M" <> num x <> "," <> num y <> " l6,-6 l6,6 l6,-6 l6,6 l6,-6 l6,6")
+    , at "class" (if on then "element on" else "element")
     , at "fill" "none", at "stroke" (if on then "#ff5a1f" else "#8b9197")
     , at "stroke-width" (if on then "3" else "2")
     ]

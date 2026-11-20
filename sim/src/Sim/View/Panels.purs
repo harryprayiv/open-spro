@@ -4,9 +4,10 @@ module Sim.View.Panels (machineView, brew, cup, faults, readings) where
 
 import Prelude
 
-import Data.Array (last, mapWithIndex, null, reverse, take)
+import Data.Array (findIndex, index, last, mapWithIndex, null, reverse, take)
 import Data.Array.NonEmpty as NEA
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Number.Format (fixed, toStringWith)
 import Data.String (joinWith)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
@@ -17,9 +18,9 @@ import Sim.Controller (Event(..), heaterDrawWatts, shotInProgress)
 import Sim.Invariants (checks)
 import Sim.Model (Action(..), Field(..), State)
 import Sim.Problems (Problems, anyProblem)
-import Sim.Recipe (Recipe, builtIn, roastLabel, roastNote, roasts, targetGrams, withRoastDefaults)
+import Sim.Recipe (Recipe, Roast, roastLabel, roastNote, roasts, samples, targetGrams)
 import Sim.Types (ClientKind(..), FaultKind(..), PowerMode(..), Shot, StepMode(..))
-import Sim.Update (allShapes, applyRecipe, chooseShape, fieldKey, limitsOf, setField, valueOf)
+import Sim.Update (allShapes, applyRecipe, chooseRoast, chooseShape, fieldKey, findGrind, isLocked, limitsOf, setField, toggleLock, valueOf)
 import Sim.View.Bench (forecastLine)
 import Sim.View.Chart (chart)
 import Sim.View.Front (front)
@@ -103,52 +104,50 @@ brew st =
     w = st.world
     r = st.recipe
   in
-    [ section "Paddle"
+    [ HH.div [ cls "choices" ]
         [ primary "Start shot" (Send ShotRequested)
         , button "Next step" (Send StepAdvanceRequested)
         , button "Stop" (Send ShotStopRequested)
-        , toggle "Steam valve" w.dist.steamValveOpen (Disturb \d -> d { steamValveOpen = not d.steamValveOpen })
+        , toggle "Steam" w.dist.steamValveOpen (Disturb \d -> d { steamValveOpen = not d.steamValveOpen })
         ]
-    , section "Power"
-        [ button "Wake, brew only" (Send (WakeRequested BrewReady))
-        , button "Wake, brew and steam" (Send (WakeRequested Full))
-        , button "Sleep" (Send SleepRequested)
-        ]
-    , section "Time"
-        [ segmented (map (\speed -> chosen (st.speed == speed) (show speed <> "x") (SetSpeed speed)) [ 1, 10, 60 ])
-        , button "Skip warm-up" SkipWarmUp
-        , button "Reset" Reset
-        ]
-    , section "Beans" (map presetButton builtIn <> map savedPreset st.saved)
-    , HH.div [ cls "fields" ]
-        [ textRow "Bean" "name of the coffee" r.name (\text -> Change _ { recipe = r { name = text } })
-        , textRow "Roaster" "who roasted it" r.roaster (\text -> Change _ { recipe = r { roaster = text } })
-        , textRow "Roasted on" "date on the bag" r.roastedOn (\text -> Change _ { recipe = r { roastedOn = text } })
-        ]
-    , HH.div [ cls "choices" ]
-        (map (\roast -> chosen (r.roast == roast) (roastLabel roast) (Change _ { recipe = r { roast = roast } })) roasts)
-    , HH.div [ cls "choices" ]
-        [ button "Use this roast's starting point" (Change \s -> applyRecipe (withRoastDefaults s.recipe) s { draft = Nothing })
-        , button "Save these beans" SavePreset
+    , section "Beans" (map presetButton samples <> map savedPreset st.saved)
+    , HH.div [ cls "bean" ]
+        [ roastDrum r.roast
+        , HH.div [ cls "fields" ]
+            [ textRow "Bean" "name of the coffee" r.name (\text -> Change _ { recipe = r { name = text } })
+            , textRow "Roaster" "who roasted it" r.roaster (\text -> Change _ { recipe = r { roaster = text } })
+            , textRow "Roasted" "date on the bag" r.roastedOn (\text -> Change _ { recipe = r { roastedOn = text } })
+            ]
         ]
     , HH.p [ cls "note" ] [ HH.text (roastNote r.roast) ]
+    , section "Recipe" []
     , HH.div [ cls "fields" ]
         [ fieldRow st Dose "Beans in" "g" 1
-        , fieldRow st Ratio "Ratio, 1 to" "" 2
         , fieldRow st Target "In the cup" "g" 1
-        , fieldRow st Temp "Water" "C" 1
         , fieldRow st Seconds "Shot time" "s" 0
-        , fieldRow st Grind "Grind, coarser" "steps" 1
+        , fieldRow st Temp "Water" "C" 1
+        , fieldRow st Grind "Grind" "coarser" 1
         ]
-    , HH.div [ cls "choices" ]
-        [ toggle "Machine paces the shot to this time" r.paced (Change \s -> applyRecipe s.recipe { paced = not s.recipe.paced } s) ]
     , forecastLine st
+    , HH.div [ cls "choices" ]
+        ( [ toggle "Pace to time" r.paced (Change \s -> applyRecipe s.recipe { paced = not s.recipe.paced } s) ]
+            <> (if isLocked st Grind then [] else [ button "Find the grind" (Change \s -> applyRecipe (findGrind s s.recipe) s { draft = Nothing }) ])
+            <> [ button "Save these beans" SavePreset ]
+        )
     , section "Profile"
         [ segmented
             ( mapWithIndex
                 (\i shape -> chosen (st.recipe.profileIndex == i) shape.name (Change (chooseShape i)))
                 (allShapes st)
             )
+        ]
+    , section "Machine"
+        [ button "Wake, brew" (Send (WakeRequested BrewReady))
+        , button "Wake, brew and steam" (Send (WakeRequested Full))
+        , button "Sleep" (Send SleepRequested)
+        , segmented (map (\speed -> chosen (st.speed == speed) (show speed <> "x") (SetSpeed speed)) [ 1, 10, 60 ])
+        , button "Skip warm-up" SkipWarmUp
+        , button "Reset" Reset
         ]
     ]
 
@@ -169,6 +168,24 @@ nowPlaying st =
       , HH.span [ cls "now-details" ] [ HH.text (joinWith ", " details) ]
       , HH.span [ cls "now-cup" ] [ HH.text cupNote ]
       ]
+
+-- | The roast as a drum: the chosen level in the window with its
+-- | neighbours turning away above and below. Clicking a neighbour turns
+-- | the drum to it.
+roastDrum :: forall w. Roast -> HH.HTML w Action
+roastDrum now =
+  let
+    here = fromMaybe 0 (findIndex (_ == now) roasts)
+    face offset = case index roasts (here + offset) of
+      Just roast ->
+        HH.button
+          [ cls ("drum-face at" <> show (offset + 2))
+          , HE.onClick \_ -> Change (chooseRoast roast)
+          ]
+          [ HH.text (roastLabel roast) ]
+      Nothing -> HH.span [ cls "drum-face blank" ] []
+  in
+    HH.div [ cls "drum", HP.title "Degree of roast" ] (map face [ -2, -1, 0, 1, 2 ])
 
 ------------------------------------------------------------
 -- Controls pane, cup tab
@@ -224,20 +241,39 @@ textRow title hint value act =
     , HH.input [ HP.type_ HP.InputText, HP.placeholder hint, HP.value value, HE.onValueInput act ]
     ]
 
--- | One recipe setting: a slider for coarse moves and a box for an exact
--- | number. Both write the same value.
+-- | One recipe setting: a slider for coarse moves, a box for an exact
+-- | number, and a key that holds it. A held setting shows as plain text
+-- | and the machine's suggestions leave it alone.
 fieldRow :: forall w. State -> Field -> String -> String -> Int -> HH.HTML w Action
 fieldRow st which title unit places =
   let
     limits = limitsOf which
     value = valueOf which st.recipe
+    held = isLocked st which
+    hold =
+      HH.button
+        [ cls ("hold" <> (if held then " active" else ""))
+        , HP.title (if held then "Held. Click to let the machine suggest it." else "Free. Click to hold it.")
+        , HE.onClick \_ -> Change (toggleLock which)
+        ]
+        [ HH.text (if held then "held" else "free") ]
   in
-    HH.div [ cls "field" ]
-      [ HH.label_ [ HH.text title ]
-      , slider limits.min limits.max limits.step value (setField which)
-      , numBox st (fieldKey which) places value (setField which)
-      , HH.span [ cls "unit" ] [ HH.text unit ]
-      ]
+    if held then
+      HH.div [ cls "field" ]
+        [ HH.label_ [ HH.text title ]
+        , HH.span [ cls "held-rule" ] []
+        , HH.span [ cls "exact held-value" ] [ HH.text (toStringWith (fixed places) value) ]
+        , HH.span [ cls "unit" ] [ HH.text unit ]
+        , hold
+        ]
+    else
+      HH.div [ cls "field" ]
+        [ HH.label_ [ HH.text title ]
+        , slider limits.min limits.max limits.step value (setField which)
+        , numBox st (fieldKey which) places value (setField which)
+        , HH.span [ cls "unit" ] [ HH.text unit ]
+        , hold
+        ]
 
 ------------------------------------------------------------
 -- Bench pane, problems tab

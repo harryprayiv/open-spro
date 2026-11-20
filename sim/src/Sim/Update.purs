@@ -10,6 +10,11 @@ module Sim.Update
   , setField
   , fieldKey
   , chooseShape
+  , chooseRoast
+  , findGrind
+  , defaultLocks
+  , isLocked
+  , toggleLock
   , editShape
   , editStepTemp
   , editGroupBase
@@ -24,19 +29,22 @@ module Sim.Update
 
 import Prelude
 
-import Data.Array (deleteAt, index, length, modifyAt, snoc)
+import Data.Array (deleteAt, elem, filter, index, length, modifyAt, range, snoc)
+import Data.Foldable (foldl)
+import Data.Int (toNumber)
+import Data.Number (abs)
 import Data.Array.NonEmpty as NEA
 import Data.Either (Either(..))
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Sim.Controller (Event(..), shotInProgress)
 import Sim.Forecast (forecast)
 import Sim.Model (Field(..), State)
 import Sim.Params (Params)
 import Sim.Params as Params
 import Sim.Profiles as Profiles
-import Sim.Recipe (Limits, Recipe, doseLimits, grindLimits, puckOf, ratioLimits, secondsLimits, targetGrams, targetLimits, tempLimits, toProfile, withTarget)
+import Sim.Recipe (Limits, Recipe, Roast, doseLimits, grindLimits, puckOf, ratioLimits, secondsLimits, targetGrams, targetLimits, tempLimits, toProfile, withRoastDefaults, withTarget)
 import Sim.Shapes as Shapes
-import Sim.Types (MachineState(..), PowerMode(..), Profile)
+import Sim.Types (MachineState(..), PowerMode(..), Profile, ShotState(..))
 import Sim.World (paramsOf, send, setParams, stepMany, warmUp)
 
 ------------------------------------------------------------
@@ -101,6 +109,60 @@ fieldKey = case _ of
   Temp -> "recipe.temp"
   Seconds -> "recipe.seconds"
   Grind -> "recipe.grind"
+
+-- | Ratio and weight in the cup are one setting seen two ways, so they
+-- | share a lock.
+lockKey :: Field -> String
+lockKey = case _ of
+  Target -> fieldKey Ratio
+  field -> fieldKey field
+
+-- | The house standard holds dose, yield and time. Temperature and grind
+-- | are left for the machine to suggest.
+defaultLocks :: Array String
+defaultLocks = [ fieldKey Dose, fieldKey Ratio, fieldKey Seconds ]
+
+isLocked :: State -> Field -> Boolean
+isLocked st field = elem (lockKey field) st.locks
+
+toggleLock :: Field -> State -> State
+toggleLock field st =
+  st { locks = if isLocked st field then filter (_ /= lockKey field) st.locks else snoc st.locks (lockKey field) }
+
+-- | The grind, in half steps, whose unpaced shot comes nearest the
+-- | recipe's time. The search runs a forecast shot for each candidate.
+findGrind :: State -> Recipe -> Recipe
+findGrind st recipe =
+  let
+    candidates = map (\i -> grindLimits.min + toNumber i * grindLimits.step) (range 0 20)
+    miss grind =
+      let
+        r = recipe { grind = grind, paced = false }
+        f = forecast (paramsOf st.world) (toProfile (allShapes st) r) (puckOf r)
+      in
+        if f.outcome == Just StoppedByWeight then abs (f.seconds - recipe.seconds) else 1000.0
+    best = foldl (\acc grind -> let m = miss grind in if m < acc.miss then { grind, miss: m } else acc) { grind: recipe.grind, miss: miss recipe.grind } candidates
+  in
+    recipe { grind = best.grind }
+
+-- | Change the roast. Every setting that is not held moves to the
+-- | roast's starting point, and an unheld grind is then worked out so the
+-- | shot lands on its time. A shape of the barista's own is kept.
+chooseRoast :: Roast -> State -> State
+chooseRoast roast st =
+  let
+    now = st.recipe { roast = roast }
+    start = withRoastDefaults now
+    free field = not (isLocked st field)
+    moved = now
+      { tempC = if free Temp then start.tempC else now.tempC
+      , ratio = if free Ratio then start.ratio else now.ratio
+      , seconds = if free Seconds then start.seconds else now.seconds
+      , grind = if free Grind then start.grind else now.grind
+      , profileIndex = if now.profileIndex < builtInCount then start.profileIndex else now.profileIndex
+      }
+  in
+    applyRecipe (if free Grind then findGrind st moved else moved) st { draft = Nothing }
 
 setField :: Field -> Number -> State -> State
 setField field raw st =

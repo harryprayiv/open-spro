@@ -16,12 +16,15 @@
             "halogen-subscriptions",
             "integers",
             "maybe",
+            "media-types",
             "numbers",
             "prelude",
             "strings",
             "tailrec",
+            "web-events",
             "web-html",
-            "web-storage"
+            "web-storage",
+            "web-uievents"
           ]
         },
         "test": {
