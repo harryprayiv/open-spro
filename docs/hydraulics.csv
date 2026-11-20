@@ -1,0 +1,44 @@
+tube,from,from_port,to,to_port,circuit,max_bar,media,line,notes
+T01,BULKHEAD_IN,inside,BV_IN,in,inlet,10,cold water,3/8 stainless flex,Mains or tank feed arrives here
+T02,BV_IN,out,STR,in,inlet,10,cold water,1/4 316 tube,Manual isolation ball valve
+T03,STR,out,PRV_IN,in,inlet,10,cold water,1/4 316 tube,100 mesh strainer protects the gear pump
+T04,PRV_IN,out,MAN_COLD,in,inlet,3,cold water,1/4 316 tube,Regulator set to 3 bar
+T05,MAN_COLD,port_a,PT_IN,process,inlet,3,cold water,direct mount,Inlet pressure transducer
+T06,MAN_COLD,port_b,EC_IN,process,inlet,3,cold water,direct mount,Conductivity cell
+T07,MAN_COLD,port_f,RTD_IN,process,inlet,3,cold water,direct mount,Cold water temperature for mix feed-forward
+T08,MAN_COLD,port_c,PUMP,in,brew,3,cold water,3/8 stainless flex,Vibration isolation
+T09,PUMP,out,CV_PUMP,in,brew,16,cold water,3/8 stainless flex,Vibration isolation
+T10,CV_PUMP,out,TEE_BREW,run_a,brew,16,cold water,1/4 316 tube,Stops bypass flow from back-driving the pump
+T11,MAN_COLD,port_d,SV_BYP,in,bypass,3,cold water,1/4 316 tube,Normally closed 2-way
+T12,SV_BYP,out,NV_PRE,in,bypass,3,cold water,1/4 316 tube,
+T13,NV_PRE,out,CV_BYP,in,bypass,3,cold water,1/4 316 tube,Needle valve sets pre-brew flow
+T14,CV_BYP,out,TEE_BREW,run_b,bypass,16,cold water,1/4 316 tube,Stops pump pressure reaching the inlet side
+T15,TEE_BREW,branch,MAN_BREW,in,brew,16,cold water,1/4 316 tube,Pump and bypass join here; everything downstream is shared
+T16,MAN_BREW,port_a,PT_BREW,process,brew,16,cold water,direct mount,Brew pressure transducer on the cold side for sensor life
+T17,MAN_BREW,port_b,EXP,in,brew,16,cold water,direct mount,Expansion valve set to 12 bar
+T18,EXP,out,DRIP_TRAY,in,drain,0,water,1/4 316 tube,
+T19,MAN_BREW,port_c,BOILER_BREW,inlet_bottom,hot_branch,16,cold water,1/4 316 tube with heat trap loop,Loop stops hot water creeping back to the manifold
+T20,BOILER_BREW,outlet_top,MAN_MIX,hot_in,hot_branch,16,hot water at 104 C,thin wall 316 stub about 40 mm,Insulated; 0.8 mm jet at the manifold inlet gives the mix valve authority
+T21,MAN_BREW,port_d,MV_MIX,in,cold_branch,16,cold water,1/4 316 tube,Motorised needle valve
+T22,MV_MIX,out,CV_MIX,in,cold_branch,16,cold water,1/4 316 tube,
+T23,CV_MIX,out,MAN_MIX,cold_in,cold_branch,16,cold water,1/4 316 tube,Check valve at the manifold keeps hot water out of the cold branch
+T24,MAN_MIX,port_a,RTD_MIX,process,brew,16,mixed water,direct mount,Fast RTD immediately after the static mixer
+T25,MAN_MIX,out,SV_GRP,p,brew,16,mixed water,direct mount,3-way valve; mixing happens upstream of it
+T26,SV_GRP,a,GROUP_INSERT,in,brew,16,mixed water,direct mount,Thin wall insert with an air gap to the heated block
+T27,GROUP_INSERT,out,DISPERSION,in,brew,16,mixed water,internal passage,RTD_GW sits here above the screen
+T28,SV_GRP,r,DRIP_TRAY,in,drain,0,hot water,1/4 316 tube,Puck pressure release
+T29,MAN_COLD,port_e,CV_FILL,in,steam_fill,3,cold water,1/4 316 tube,
+T30,CV_FILL,out,SV_FILL,in,steam_fill,4,cold water,1/4 316 tube,Check valve keeps steam out of the inlet side
+T31,SV_FILL,out,BOILER_STEAM,fill,steam_fill,4,cold water,1/4 316 tube,Fills on line pressure; no pump involved
+T32,BOILER_STEAM,top_a,MAN_STEAM,in,steam,4,steam,1/4 316 tube,
+T33,MAN_STEAM,port_a,SRV_STM,in,steam,4,steam,direct mount,Certified safety valve
+T34,MAN_STEAM,port_b,VB,process,steam,4,steam,direct mount,Vacuum breaker
+T35,MAN_STEAM,port_c,PT_STM,process,steam,4,steam,1/4 316 tube with cooling loop,Pigtail protects the transducer from steam temperature
+T36,SRV_STM,out,DRIP_TRAY,in,drain,0,steam,3/8 316 tube,Vent away from the operator
+T37,BOILER_STEAM,top_b,STEAM_VALVE,in,steam,4,steam,1/4 316 tube,Manual valve
+T38,STEAM_VALVE,out,WAND,in,steam,4,steam,ball joint,
+T39,BOILER_STEAM,bottom,BV_DRAIN_STM,in,drain,4,hot water,1/4 316 tube,Blowdown removes concentrated minerals
+T40,BV_DRAIN_STM,out,BULKHEAD_DRAIN,inside,drain,0,hot water,1/4 316 tube,
+T41,BOILER_BREW,drain_bottom,BV_DRAIN_BREW,in,drain,16,hot water,1/4 316 tube,Service drain
+T42,BV_DRAIN_BREW,out,BULKHEAD_DRAIN,inside,drain,0,hot water,1/4 316 tube,
+T43,DRIP_TRAY,outlet,BULKHEAD_DRAIN,inside,drain,0,water,3/8 316 tube,

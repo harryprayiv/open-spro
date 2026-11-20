@@ -1,0 +1,32 @@
+package:
+  name: espresso-sim
+  dependencies:
+    - aff
+    - arrays
+    - datetime
+    - effect
+    - either
+    - exceptions
+    - foldable-traversable
+    - halogen
+    - halogen-subscriptions
+    - integers
+    - maybe
+    - numbers
+    - prelude
+    - strings
+    - tailrec
+    - web-html
+    - web-storage
+  test:
+    main: Test.Main
+    dependencies:
+      - console
+  bundle:
+    module: Main
+    outfile: dev/app.js
+    platform: browser
+workspace:
+  packageSet:
+    registry: 81.6.0
+  extraPackages: {}

@@ -1,0 +1,50 @@
+id,subsystem,item,spec,qty,unit_usd,ext_usd,price_basis,source,notes
+H01,hydraulics,Gear pump with integrated 24V BLDC drive,"Fluid-o-Tech FG300/400 class, 316L body, 0-5V speed input, tach output, 12 bar",1,450,450,estimate,Fluid-o-Tech sample shop or distributor quote,PEEK gears are the one polymer exception; cold side only
+H02,hydraulics,Brew boiler,"Stainless, 0.75 to 1.0 L, rated 16 bar or better, element port, RTD well, no group neck needed",1,300,300,estimate,Spare part from a stainless dual boiler machine or hired TIG work in 316L,Hot reservoir held near 104 C; passivate after welding if custom
+H03,hydraulics,Steam boiler,"Stainless, 1.5 to 2.0 L, manufacturer rated pressure vessel",1,450,450,estimate,Spare part from a stainless dual boiler machine,Do not custom weld this vessel
+H04,hydraulics,Brew boiler element,"120V, 600W, stainless or Incoloy sheath",1,60,60,estimate,Espresso parts supplier,Match boiler port thread
+H05,hydraulics,Steam boiler element,"120V, 1000W, stainless or Incoloy sheath",1,70,70,estimate,Espresso parts supplier,Match boiler port thread
+H06,hydraulics,Group block,"Custom CNC 316L heated block, 2 cartridge heater bores, 1 RTD bore, pocket for the water insert, La Marzocco pattern consumables",1,700,700,estimate,CNC job shop quote,Not saturated; holds the profile base temperature
+H07,hydraulics,Group gasket,La Marzocco pattern,1,10,10,found,Chris Coffee lists 9.95,Elastomer; unavoidable
+H08,hydraulics,Shower screen,La Marzocco pattern,1,20,20,found,Chris Coffee lists 19.95,
+H09,hydraulics,Diffuser screw,La Marzocco pattern stainless,1,23,23,found,Chris Coffee lists 22.95,
+H10,hydraulics,Portafilter,"58 mm La Marzocco pattern, stainless",1,90,90,estimate,Aftermarket; OEM stainless listed at 224.65,
+H11,hydraulics,Group cartridge heaters,"24V, 75W each, 316 sheath",2,15,30,estimate,Industrial heater supplier,24V keeps mains out of the group
+H12,hydraulics,Group 3-way solenoid,"Stainless body, 24VDC coil, food grade seals",1,85,85,estimate,Parker or ODE via espresso parts supplier,
+H13,hydraulics,2-way solenoid,"Stainless body, 24VDC coil, NC",2,65,130,estimate,Parker or ODE,Bypass and steam fill
+H14,hydraulics,Pre-brew needle valve,"316 stainless, 1/4 in tube, fine metering",1,70,70,estimate,McMaster-Carr,Slayer style restrictor in the pump bypass branch
+H15,hydraulics,Check valve,"316 stainless poppet, 1/4 in",4,35,140,estimate,McMaster-Carr,Pump outlet; bypass; steam fill; cold branch at the mix manifold
+H16,hydraulics,Expansion valve,"Adjustable, set 12 bar",1,42,42,found,Chris Coffee lists GS3 expansion valve complete at 41.95,Mechanical; independent of firmware
+H17,hydraulics,Steam safety valve,"Certified, 2.5 bar or per boiler rating",1,35,35,estimate,Espresso parts supplier,Never substitute or adjust
+H18,hydraulics,Vacuum breaker,Stainless,1,15,15,estimate,Espresso parts supplier,
+H19,hydraulics,Steam valve,"Manual, stainless",1,120,120,estimate,Espresso parts supplier,
+H20,hydraulics,Steam wand,"Plain stainless, no liner",1,60,60,estimate,Espresso parts supplier,No-burn wands have a PTFE liner
+H21,hydraulics,Inlet ball valve,"316, 3/8 in",1,20,20,estimate,McMaster-Carr,
+H22,hydraulics,Inlet strainer,"316, 100 mesh",1,25,25,estimate,McMaster-Carr,
+H23,hydraulics,Inlet pressure regulator,"Stainless or certified lead free, set 3 bar",1,70,70,estimate,McMaster-Carr,Makes line pressure pre-brew repeatable
+H24,hydraulics,Drain ball valve,"316, 1/4 in",2,20,40,estimate,McMaster-Carr,Steam boiler blowdown; brew boiler drain
+H25,hydraulics,Tube and compression fittings,"316 tube 1/4 in OD, about 6 m; about 30 two-ferrule fittings and BSPP adapters",1,450,450,estimate,McMaster-Carr,Fittings dominate; count them in FreeCAD before ordering
+H26,hydraulics,Stainless corrugated flex hose,3/8 BSP,3,12,36,found,Espresso Parts lists 150 cm flex at 11.90,Pump isolation and inlet
+H27,hydraulics,Boiler and line insulation,Silicone foam or aerogel blanket,1,40,40,estimate,McMaster-Carr,Outside the water path
+H28,hydraulics,Group water insert,"Thin wall 316L, carries mixed water from the mix manifold to the dispersion plate, air gap to the block, under 5 ml inside",1,180,180,estimate,CNC job shop quote,Low mass so water temperature changes reach the puck
+H29,hydraulics,Mix manifold,"316L, hot inlet with 0.8 mm jet, cold inlet, static mixer, fast RTD port, mounts on the group valve",1,150,150,estimate,CNC job shop quote,Keep volume from mix point to screen as small as possible
+H30,hydraulics,Hot stub,"Thin wall 316 tube, about 40 mm, brew boiler outlet to mix manifold, insulated",1,10,10,estimate,McMaster-Carr,Thermal break between reservoir and group
+H31,hydraulics,Mix valve,"316 stainless fine metering needle valve, 1/4 in tube",1,70,70,estimate,McMaster-Carr,Cold branch only; never sees hot water
+H32,hydraulics,Mix valve actuator,"NEMA 17 stepper, zero backlash coupling, bracket",1,60,60,estimate,Electronics distributor,Driver is on the controller board; homes by stall detection
+S01,sensing,Pressure transducer,"316L wetted, 0 to 16 bar, ratiometric 0.5 to 4.5V",3,45,135,estimate,Industrial sensor supplier,Inlet; brew; steam (steam can be 0 to 4 bar)
+S02,sensing,RTD,"PT100 class A, 4 wire, 316 sheath",3,25,75,estimate,Industrial sensor supplier,Brew boiler; group block; cold inlet
+S03,sensing,Steam boiler level probe,Stainless rod with ceramic insulator,1,20,20,estimate,Espresso parts supplier,Needs conductive water
+S04,sensing,Inlet conductivity sensor,Inline EC cell,1,35,35,estimate,Industrial sensor supplier,Water quality gate for scale prevention
+S05,sensing,Load cell,"Single point, 2 kg, aluminium",1,15,15,estimate,Electronics distributor,Under the cup platform
+S06,sensing,Fast RTD,"PT100 class A, 1.5 mm sheath, 4 wire",2,45,90,estimate,Industrial sensor supplier,Mix manifold outlet; water path above the screen
+E01,electrical,Controller board,"Custom KiCad board, 5 fabricated, 1 assembled",1,200,200,estimate,PCB fab plus distributor parts,"Includes RTD and bridge ADCs, valve drivers and an SPI stepper driver for the mix valve"
+E02,electrical,Solid state relay,"Zero cross, 25A, from an authorized distributor, with heatsink",2,35,70,estimate,Electronics distributor,Counterfeit SSRs fail shorted
+E03,electrical,24V power supply,"350W, enclosed",1,45,45,estimate,Electronics distributor,Pump; valves; group heaters; logic
+E04,electrical,Safety contactor,"2 pole, 30A, 24V coil",1,30,30,estimate,Electronics distributor,Drops both boiler elements; driven by the hardware safety chain
+E05,electrical,Thermal cutoffs,"Manual reset bimetal, one per boiler, plus group thermal fuse",3,10,30,estimate,Espresso parts supplier,In series with each element
+E06,electrical,Mains entry,"Fused inlet, 2 pole switch, GFCI protection",1,60,60,estimate,Electronics distributor,
+E07,electrical,Wiring,"High temperature wire, ferrules, ground studs, terminal blocks",1,60,60,estimate,Electronics distributor,
+E08,electrical,Paddle assembly,"3 position, hall sensors or microswitches",1,40,40,estimate,Custom plus distributor parts,
+M01,enclosure,Laser cut and bent panel set,"304 stainless, includes drip tray and grate",1,450,450,estimate,Remote laser cutting service quote,
+M02,enclosure,Frame hardware and feet,"Fasteners, standoffs, rivet nuts, feet",1,95,95,estimate,McMaster-Carr,
+L01,labour,Hired welding or brazing,Allowance,1,200,200,estimate,Local shop,Small if boilers are bought as spares

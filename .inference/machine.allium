@@ -1,0 +1,827 @@
+-- allium: 3
+-- machine.allium
+--
+-- Behaviour of the espresso machine controller: power modes, heating,
+-- steam boiler fill, shot execution, valve and pump interlocks, faults.
+--
+-- Scope: what the firmware must do and must never do. The tube-by-tube
+-- netlist is docs/hydraulics.csv; component names here (SV_BYP, SV_GRP,
+-- SV_FILL, MV_MIX, NV_PRE, EXP, SRV_STM) match that file.
+--
+-- Temperature model: the brew boiler is a hot reservoir held above any
+-- brew temperature. Water for the puck is blended at the group from
+-- the hot branch and a cold branch through the motorised valve MV_MIX,
+-- closed loop on the mix sensor, so every step of a profile carries
+-- its own water temperature.
+--
+-- Not in scope because they are mechanical and act with no firmware:
+-- the expansion valve EXP, the steam safety valve SRV_STM, the vacuum
+-- breaker VB, the thermal cutoffs, the manual steam valve, the needle
+-- valve NV_PRE setting and the drain ball valves.
+
+------------------------------------------------------------
+-- Vocabulary
+------------------------------------------------------------
+
+enum PowerMode { asleep | brew_ready | full }
+
+enum MachineState { sleeping | heating | ready | faulted }
+
+enum TwoWay { closed | open }
+
+-- SV_GRP: to_drain vents the puck to the drip tray, to_group connects
+-- the brew boiler to the shower screen.
+enum GroupValve { to_drain | to_group }
+
+-- MV_MIX: parked is fully closed. regulating means the firmware is
+-- positioning it to hold mix_target_c.
+enum MixValve { parked | regulating }
+
+enum PumpMode { stopped | pressure_control | flow_control }
+
+-- line_prebrew: pump stopped, SV_BYP open, regulated line pressure
+-- through NV_PRE wets the puck (the Slayer style stage).
+-- pressure / flow: SV_BYP closed, pump closed loop on PT_BREW or on
+-- pump speed and scale (the Decent style stages).
+enum StepMode { line_prebrew | pressure | flow }
+
+enum ShotState { running | stopped_by_weight | stopped_by_time | stopped_by_user | aborted }
+
+enum FaultKind {
+    sensor_open | sensor_short | over_temperature | over_pressure |
+    fill_timeout | no_inlet_pressure | scale_lost | watchdog |
+    mix_over_temperature
+}
+
+enum ClientKind { paddle | remote | service | supervisor }
+
+------------------------------------------------------------
+-- Configuration
+------------------------------------------------------------
+
+config {
+    circuit_budget_watts: Integer = 1440
+    brew_element_watts: Integer = 600
+    steam_element_watts: Integer = 1000
+    group_heater_watts: Integer = 150
+
+    reservoir_target_c: Decimal = 104.0
+    reservoir_headroom_c: Decimal = 6.0
+    steam_target_bar: Decimal = 1.8
+    ready_band_c: Decimal = 0.3
+    drop_out_band_c: Decimal = 0.8
+    steam_ready_band_bar: Decimal = 0.15
+    steam_drop_out_band_bar: Decimal = 0.3
+
+    brew_limit_c: Decimal = 118.0
+    mix_limit_c: Decimal = 99.0
+    group_limit_c: Decimal = 110.0
+    steam_limit_bar: Decimal = 2.3
+    brew_pressure_limit_bar: Decimal = 11.0
+
+    min_inlet_bar: Decimal = 1.5
+    max_inlet_conductivity_us: Decimal = 250.0
+
+    fill_timeout: Duration = 90.seconds
+    shot_timeout: Duration = 120.seconds
+    idle_sleep_after: Duration = 45.minutes
+    blowdown_after_fills: Integer = 200
+}
+
+------------------------------------------------------------
+-- Entities
+------------------------------------------------------------
+
+entity Client {
+    kind: ClientKind
+}
+
+entity Machine {
+    requested_mode: PowerMode
+    state: MachineState
+    last_activity_at: Timestamp
+
+    -- sensors
+    inlet_bar: Decimal
+    inlet_conductivity_us: Decimal
+    brew_bar: Decimal
+    brew_boiler_c: Decimal
+    inlet_c: Decimal
+    mix_c: Decimal
+    group_c: Decimal
+    group_water_c: Decimal
+    steam_bar: Decimal
+    steam_level_ok: Boolean
+    cup_grams: Decimal
+
+    -- actuators
+    heat_enabled: Boolean
+    brew_element_on: Boolean
+    steam_element_on: Boolean
+    group_heater_on: Boolean
+    pump: PumpMode
+    bypass_valve: TwoWay
+    fill_valve: TwoWay
+    group_valve: GroupValve
+    mix_valve: MixValve
+
+    -- setpoints that change at run time
+    selected_profile: Profile?
+    group_target_c: Decimal
+    mix_target_c: Decimal?
+    pressure_target_bar: Decimal?
+    flow_target_ml_per_s: Decimal?
+
+    -- bookkeeping
+    fill_started_at: Timestamp?
+    fills_since_blowdown: Integer
+    blowdown_due: Boolean
+    water_warning: Boolean
+
+    shots: Shot with machine = this
+    faults: Fault with machine = this
+
+    -- sum of the rated watts of every heater commanded on right now
+    heater_draw_watts: Integer
+
+    running_shots: shots where state = running
+
+    -- derived
+    inlet_ok: inlet_bar >= config.min_inlet_bar
+    inlet_low: inlet_bar < config.min_inlet_bar
+    steam_level_low: not steam_level_ok
+
+    brew_side_ready:
+        brew_boiler_c >= config.reservoir_target_c - config.ready_band_c
+        and brew_boiler_c <= config.reservoir_target_c + config.ready_band_c
+        and group_c >= group_target_c - config.ready_band_c
+        and group_c <= group_target_c + config.ready_band_c
+
+    -- The steam element switches at the setpoint, so the pressure hovers
+    -- just under it. Ready is granted a little below the setpoint.
+    steam_side_ready: steam_bar >= config.steam_target_bar - config.steam_ready_band_bar
+
+    targets_met:
+        brew_side_ready
+        and (requested_mode = brew_ready or steam_side_ready)
+
+    -- Losing ready takes a wider excursion than gaining it, so a reading
+    -- at the edge of the ready band does not flip the state.
+    targets_lost:
+        brew_boiler_c < config.reservoir_target_c - config.drop_out_band_c
+        or brew_boiler_c > config.reservoir_target_c + config.drop_out_band_c
+        or group_c < group_target_c - config.drop_out_band_c
+        or group_c > group_target_c + config.drop_out_band_c
+        or (requested_mode = full
+            and steam_bar < config.steam_target_bar - config.steam_drop_out_band_bar)
+
+    needs_fill: not steam_level_ok and requested_mode = full
+
+    over_limit:
+        brew_boiler_c > config.brew_limit_c
+        or group_c > config.group_limit_c
+        or steam_bar > config.steam_limit_bar
+
+    over_pressure: brew_bar > config.brew_pressure_limit_bar
+
+    mix_over: mix_c > config.mix_limit_c
+
+    hard_water: inlet_conductivity_us > config.max_inlet_conductivity_us
+
+    blowdown_needed: fills_since_blowdown >= config.blowdown_after_fills
+
+    shot_in_progress: running_shots.count > 0
+}
+
+entity Profile {
+    name: String
+    target_grams: Decimal
+    -- temperature the group block is held at for this profile
+    group_base_c: Decimal
+    -- hottest target_c of any step
+    max_target_c: Decimal
+    first_step: Step
+}
+
+entity Step {
+    next: Step?
+    mode: StepMode
+    target_c: Decimal
+    target_bar: Decimal?
+    target_ml_per_s: Decimal?
+    max_duration: Duration
+    exit_above_bar: Decimal?
+    exit_above_grams: Decimal?
+}
+
+entity Shot {
+    machine: Machine
+    profile: Profile
+    state: ShotState
+    step: Step
+    started_at: Timestamp
+    step_started_at: Timestamp
+    ended_at: Timestamp?
+    final_grams: Decimal?
+
+    step_expired: step_started_at + step.max_duration <= now
+
+    step_pressure_reached:
+        step.exit_above_bar != null and machine.brew_bar >= step.exit_above_bar
+
+    step_weight_reached:
+        step.exit_above_grams != null and machine.cup_grams >= step.exit_above_grams
+
+    target_weight_reached: machine.cup_grams >= profile.target_grams
+
+    has_next_step: step.next != null
+}
+
+entity Fault {
+    machine: Machine
+    kind: FaultKind
+    raised_at: Timestamp
+    cleared_at: Timestamp?
+}
+
+------------------------------------------------------------
+-- Power modes
+------------------------------------------------------------
+
+rule Wake {
+    when: WakeRequested(client, machine, mode)
+    requires:
+        machine.state = sleeping
+        mode != asleep
+    ensures:
+        machine.requested_mode = mode
+        machine.state = heating
+        machine.heat_enabled = true
+        machine.last_activity_at = now
+}
+
+rule ChangeMode {
+    when: WakeRequested(client, machine, mode)
+    requires:
+        machine.state = heating or machine.state = ready
+        mode != asleep
+    ensures:
+        machine.requested_mode = mode
+        machine.last_activity_at = now
+        if mode != full:
+            machine.steam_element_on = false
+            machine.fill_valve = closed
+            machine.fill_started_at = null
+}
+
+-- Reaching ready restarts the idle clock, so the idle period is
+-- measured from the moment the machine became usable and not from the
+-- moment it was switched on.
+rule BecomeReady {
+    when: machine: Machine.targets_met
+    requires: machine.state = heating
+    ensures:
+        machine.state = ready
+        machine.last_activity_at = now
+}
+
+-- ready follows the targets in both directions, with hysteresis. A
+-- mode change or a new group setpoint that puts a reading outside the
+-- drop-out band sends the machine back to heating through this rule.
+rule FallBackToHeating {
+    when: machine: Machine.targets_lost
+    requires:
+        machine.state = ready
+        not machine.shot_in_progress
+    ensures: machine.state = heating
+}
+
+rule Sleep {
+    when: SleepRequested(client, machine)
+    requires:
+        machine.state = heating or machine.state = ready
+        not machine.shot_in_progress
+    ensures: MachineSlept(machine: machine)
+}
+
+rule IdleSleep {
+    when: machine: Machine.last_activity_at + config.idle_sleep_after <= now
+    requires:
+        machine.state = heating or machine.state = ready
+        not machine.shot_in_progress
+    ensures: MachineSlept(machine: machine)
+}
+
+rule ApplySleep {
+    when: MachineSlept(machine)
+    ensures:
+        machine.requested_mode = asleep
+        machine.state = sleeping
+        machine.brew_element_on = false
+        machine.steam_element_on = false
+        machine.group_heater_on = false
+        machine.heat_enabled = false
+        machine.fill_valve = closed
+        machine.bypass_valve = closed
+        machine.pump = stopped
+        machine.group_valve = to_drain
+        machine.mix_valve = parked
+        machine.mix_target_c = null
+}
+
+-- heat_enabled is the HEAT_ENABLE net: it holds the safety contactor
+-- in, in series with the hardware thermal cutoffs. False isolates both
+-- boiler elements from mains whatever the SSRs are doing.
+
+------------------------------------------------------------
+-- Steam boiler fill (line pressure through CV_FILL and SV_FILL)
+------------------------------------------------------------
+
+rule LowWaterCutsElement {
+    when: machine: Machine.steam_level_low
+    ensures: machine.steam_element_on = false
+}
+
+rule FillNeeded {
+    when: machine: Machine.needs_fill
+    ensures: FillWanted(machine: machine)
+}
+
+-- A fill held off for lack of inlet pressure is asked for again when
+-- pressure returns.
+rule RetryFillWhenInletReturns {
+    when: machine: Machine.inlet_ok
+    requires: machine.needs_fill
+    ensures: FillWanted(machine: machine)
+}
+
+-- A fill that was held off by a shot is asked for again when the shot
+-- ends (see EndShot).
+rule StartFill {
+    when: FillWanted(machine)
+    requires:
+        machine.needs_fill
+        machine.state = heating or machine.state = ready
+        machine.inlet_ok
+        not machine.shot_in_progress
+    ensures:
+        machine.fill_valve = open
+        machine.fill_started_at = now
+        machine.steam_element_on = false
+}
+
+rule FinishFill {
+    when: machine: Machine.steam_level_ok
+    requires: machine.fill_valve = open
+    ensures:
+        machine.fill_valve = closed
+        machine.fill_started_at = null
+        machine.fills_since_blowdown = machine.fills_since_blowdown + 1
+}
+
+rule FillTimedOut {
+    when: machine: Machine.fill_started_at + config.fill_timeout <= now
+    requires: machine.fill_valve = open
+    ensures: FaultDetected(machine: machine, kind: fill_timeout)
+}
+
+rule BlowdownBecomesDue {
+    when: machine: Machine.blowdown_needed
+    ensures: machine.blowdown_due = true
+}
+
+rule BlowdownDone {
+    when: BlowdownConfirmed(client, machine)
+    requires: machine.state = sleeping
+    ensures:
+        machine.fills_since_blowdown = 0
+        machine.blowdown_due = false
+}
+
+rule HardWaterSeen {
+    when: machine: Machine.hard_water
+    ensures: machine.water_warning = true
+}
+
+rule WaterWarningCleared {
+    when: WaterWarningAcknowledged(client, machine)
+    requires: not machine.hard_water
+    ensures: machine.water_warning = false
+}
+
+------------------------------------------------------------
+-- Shot execution
+------------------------------------------------------------
+
+-- Choosing a profile moves the group block setpoint. The block takes
+-- minutes to follow, and StartShot waits for it.
+rule SelectProfile {
+    when: ProfileSelected(client, machine, profile)
+    requires:
+        machine.state != faulted
+        not machine.shot_in_progress
+    ensures:
+        machine.selected_profile = profile
+        machine.group_target_c = profile.group_base_c
+        machine.last_activity_at = now
+}
+
+rule StartShot {
+    when: ShotRequested(client, machine, profile)
+    requires:
+        machine.state = ready
+        not machine.targets_lost
+        machine.group_target_c = profile.group_base_c
+        machine.brew_boiler_c >= profile.max_target_c + config.reservoir_headroom_c
+        profile.max_target_c <= config.mix_limit_c
+        not machine.shot_in_progress
+        machine.fill_valve = closed
+        machine.inlet_ok
+    ensures:
+        let shot = Shot.created(
+            machine: machine,
+            profile: profile,
+            state: running,
+            step: profile.first_step,
+            started_at: now,
+            step_started_at: now
+        )
+        machine.last_activity_at = now
+        machine.group_valve = to_group
+        machine.mix_valve = regulating
+        ScaleTared(machine: machine)
+        StepEntered(shot: shot)
+}
+
+-- Every step sets the water temperature, whatever its mode. This holds
+-- in line_prebrew too, because the bypass branch feeds the same hot and
+-- cold split as the pump.
+rule SetStepTemperature {
+    when: StepEntered(shot)
+    requires: shot.state = running
+    ensures: shot.machine.mix_target_c = shot.step.target_c
+}
+
+-- Entering a step sets the hydraulic configuration for its mode.
+rule EnterLinePrebrew {
+    when: StepEntered(shot)
+    requires:
+        shot.state = running
+        shot.step.mode = line_prebrew
+    ensures:
+        shot.machine.pump = stopped
+        shot.machine.bypass_valve = open
+        shot.machine.pressure_target_bar = null
+        shot.machine.flow_target_ml_per_s = null
+}
+
+rule EnterPressureStep {
+    when: StepEntered(shot)
+    requires:
+        shot.state = running
+        shot.step.mode = pressure
+    ensures:
+        shot.machine.bypass_valve = closed
+        shot.machine.pump = pressure_control
+        shot.machine.pressure_target_bar = shot.step.target_bar
+        shot.machine.flow_target_ml_per_s = null
+}
+
+rule EnterFlowStep {
+    when: StepEntered(shot)
+    requires:
+        shot.state = running
+        shot.step.mode = flow
+    ensures:
+        shot.machine.bypass_valve = closed
+        shot.machine.pump = flow_control
+        shot.machine.flow_target_ml_per_s = shot.step.target_ml_per_s
+        shot.machine.pressure_target_bar = null
+}
+
+rule StepExitsOnTime {
+    when: shot: Shot.step_expired
+    requires: shot.state = running
+    ensures: StepFinished(shot: shot)
+}
+
+rule StepExitsOnPressure {
+    when: shot: Shot.step_pressure_reached
+    requires: shot.state = running
+    ensures: StepFinished(shot: shot)
+}
+
+rule StepExitsOnWeight {
+    when: shot: Shot.step_weight_reached
+    requires: shot.state = running
+    ensures: StepFinished(shot: shot)
+}
+
+rule AdvanceStep {
+    when: StepFinished(shot)
+    requires:
+        shot.state = running
+        shot.has_next_step
+    ensures:
+        shot.step = shot.step.next
+        shot.step_started_at = now
+        StepEntered(shot: shot)
+}
+
+rule LastStepFinished {
+    when: StepFinished(shot)
+    requires:
+        shot.state = running
+        not shot.has_next_step
+    ensures: ShotEnded(shot: shot, outcome: stopped_by_time)
+}
+
+rule StopOnWeight {
+    when: shot: Shot.target_weight_reached
+    requires: shot.state = running
+    ensures: ShotEnded(shot: shot, outcome: stopped_by_weight)
+}
+
+rule StopOnTimeout {
+    when: shot: Shot.started_at + config.shot_timeout <= now
+    requires: shot.state = running
+    ensures: ShotEnded(shot: shot, outcome: stopped_by_time)
+}
+
+rule StopByUser {
+    when: ShotStopRequested(client, shot)
+    requires: shot.state = running
+    ensures: ShotEnded(shot: shot, outcome: stopped_by_user)
+}
+
+-- The paddle can drive a shot by hand: centre position asks for the
+-- next step, which lets a line_prebrew step run as long as the barista
+-- holds it there.
+rule AdvanceByUser {
+    when: StepAdvanceRequested(client, shot)
+    requires: shot.state = running
+    ensures: StepFinished(shot: shot)
+}
+
+rule EndShot {
+    when: ShotEnded(shot, outcome)
+    requires: shot.state = running
+    ensures:
+        shot.state = outcome
+        shot.ended_at = now
+        shot.final_grams = shot.machine.cup_grams
+        shot.machine.pump = stopped
+        shot.machine.bypass_valve = closed
+        shot.machine.group_valve = to_drain
+        shot.machine.mix_valve = parked
+        shot.machine.mix_target_c = null
+        shot.machine.pressure_target_bar = null
+        shot.machine.flow_target_ml_per_s = null
+        shot.machine.last_activity_at = now
+        if shot.machine.needs_fill:
+            FillWanted(machine: shot.machine)
+}
+
+------------------------------------------------------------
+-- Faults
+------------------------------------------------------------
+
+rule OverLimit {
+    when: machine: Machine.over_limit
+    requires: machine.state != faulted
+    ensures: FaultDetected(machine: machine, kind: over_temperature)
+}
+
+rule OverPressure {
+    when: machine: Machine.over_pressure
+    requires: machine.state != faulted
+    ensures: FaultDetected(machine: machine, kind: over_pressure)
+}
+
+-- Water above mix_limit_c reaching the puck means the cold branch has
+-- failed. The reservoir is hotter than boiling point at open pressure,
+-- so this stops the shot at once.
+rule MixTooHot {
+    when: machine: Machine.mix_over
+    requires:
+        machine.shot_in_progress
+        machine.state != faulted
+    ensures: FaultDetected(machine: machine, kind: mix_over_temperature)
+}
+
+rule SensorFault {
+    when: SensorFailed(client, machine, kind)
+    requires:
+        machine.state != faulted
+        kind = sensor_open or kind = sensor_short or kind = scale_lost or kind = watchdog
+    ensures: FaultDetected(machine: machine, kind: kind)
+}
+
+rule InletLostDuringShot {
+    when: machine: Machine.inlet_low
+    requires:
+        machine.shot_in_progress
+        machine.state != faulted
+    ensures: FaultDetected(machine: machine, kind: no_inlet_pressure)
+}
+
+rule EnterFault {
+    when: FaultDetected(machine, kind)
+    ensures:
+        Fault.created(machine: machine, kind: kind, raised_at: now)
+        machine.state = faulted
+        machine.brew_element_on = false
+        machine.steam_element_on = false
+        machine.group_heater_on = false
+        machine.heat_enabled = false
+        machine.fill_valve = closed
+        machine.bypass_valve = closed
+        machine.pump = stopped
+        machine.group_valve = to_drain
+        machine.mix_valve = parked
+        machine.mix_target_c = null
+        for s in machine.shots where state = running:
+            s.state = aborted
+            s.ended_at = now
+}
+
+-- A fault never clears itself. Someone looks at the machine first.
+rule ClearFaults {
+    when: FaultsCleared(client, machine)
+    requires:
+        machine.state = faulted
+        client.kind = service
+        not machine.over_limit
+        not machine.over_pressure
+    ensures:
+        for f in machine.faults where cleared_at = null:
+            f.cleared_at = now
+        machine.requested_mode = asleep
+        machine.state = sleeping
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant CircuitBudget {
+    for m in Machines:
+        m.heater_draw_watts <= config.circuit_budget_watts
+}
+
+invariant NoHeatUnlessAwake {
+    for m in Machines:
+        (m.state = sleeping or m.state = faulted) implies
+            (not m.brew_element_on and not m.steam_element_on
+             and not m.group_heater_on and not m.heat_enabled)
+}
+
+invariant SteamElementNeedsWater {
+    for m in Machines:
+        m.steam_element_on implies m.steam_level_ok
+}
+
+invariant SteamOnlyInFullMode {
+    for m in Machines:
+        m.steam_element_on implies m.requested_mode = full
+}
+
+invariant PumpAndBypassExclusive {
+    for m in Machines:
+        m.bypass_valve = open implies m.pump = stopped
+}
+
+invariant HydraulicsIdleOutsideShot {
+    for m in Machines:
+        not m.shot_in_progress implies
+            (m.pump = stopped and m.bypass_valve = closed
+             and m.group_valve = to_drain and m.mix_valve = parked)
+}
+
+invariant MixRegulatesDuringShot {
+    for m in Machines:
+        m.shot_in_progress implies m.mix_valve = regulating
+}
+
+invariant NoFillDuringShot {
+    for m in Machines:
+        m.shot_in_progress implies m.fill_valve = closed
+}
+
+invariant OneShotAtATime {
+    for m in Machines:
+        m.running_shots.count <= 1
+}
+
+------------------------------------------------------------
+-- Actors and surfaces
+------------------------------------------------------------
+
+actor Barista {
+    identified_by: Client where kind = paddle
+}
+
+actor RemoteUser {
+    identified_by: Client where kind = remote
+}
+
+actor Technician {
+    identified_by: Client where kind = service
+}
+
+-- The physical paddle: left is off, centre is start or next step,
+-- right is stop.
+surface Paddle {
+    facing barista: Barista
+    context machine: Machine
+    exposes:
+        machine.state
+        machine.cup_grams
+    provides:
+        WakeRequested(barista, machine, mode)
+        ProfileSelected(barista, machine, profile)
+        ShotRequested(barista, machine, profile)
+        StepAdvanceRequested(barista, shot)
+        ShotStopRequested(barista, shot)
+}
+
+-- The phone or browser page, reached through the Pi.
+surface RemotePanel {
+    facing user: RemoteUser
+    context machine: Machine
+    exposes:
+        machine.state
+        machine.requested_mode
+        machine.selected_profile.name
+        machine.brew_boiler_c
+        machine.inlet_c
+        machine.mix_c
+        machine.mix_target_c
+        machine.pressure_target_bar
+        machine.flow_target_ml_per_s
+        machine.group_c
+        machine.group_target_c
+        machine.group_water_c
+        machine.steam_bar
+        machine.brew_bar
+        machine.inlet_bar
+        machine.cup_grams
+        machine.blowdown_due
+        machine.water_warning
+        machine.shots
+        machine.faults
+    provides:
+        WakeRequested(user, machine, mode)
+        ProfileSelected(user, machine, profile)
+        SleepRequested(user, machine)
+        ShotStopRequested(user, shot)
+        WaterWarningAcknowledged(user, machine)
+}
+
+surface ServicePanel {
+    facing tech: Technician
+    context machine: Machine
+    exposes:
+        machine.faults
+        machine.fills_since_blowdown
+        machine.inlet_conductivity_us
+    provides:
+        FaultsCleared(tech, machine)
+        BlowdownConfirmed(tech, machine)
+}
+
+actor Supervisor {
+    identified_by: Client where kind = supervisor
+}
+
+-- The firmware's own sensor supervision reports failures here.
+surface SensorSupervisor {
+    facing supervisor: Supervisor
+    context machine: Machine
+    provides:
+        SensorFailed(supervisor, machine, kind)
+}
+
+------------------------------------------------------------
+-- Open questions
+------------------------------------------------------------
+
+-- 1. Remote shot start is deliberately absent from RemotePanel: a shot
+--    needs a person at the machine with a cup under the group.
+-- 2. Hot water tap and automatic blowdown solenoid are not modelled;
+--    both add a solenoid on the hot, mineral-concentrating side.
+-- 3. Flush and backflush cycles are not modelled yet.
+-- 4. Heater time-slicing (which element gets the next half cycle) is a
+--    control law; this spec only bounds the total with CircuitBudget.
+-- 5. How MV_MIX is positioned (feed-forward from inlet_c, brew_boiler_c
+--    and flow, trimmed by mix_c) is a control law and is not specified.
+-- 6. StartShot checks targets_lost itself as well as state = ready, so
+--    a shot cannot start in the instant between a setpoint change and
+--    FallBackToHeating.
+-- 8. MixTooHot reacts after the fact. In simulation the mix sensor
+--    read about 101 C before the abort landed, because the sensor lags
+--    the water. Nothing yet proves the cold branch works before hot
+--    water is released; a pre-shot check of the cold branch is needed.
+-- 7. Dose and brew ratio are not in this spec. The page turns a recipe
+--    (dose, ratio, temperature, profile shape) into a Profile before it
+--    reaches the machine.
