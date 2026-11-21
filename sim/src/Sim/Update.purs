@@ -32,20 +32,27 @@ module Sim.Update
   , hear
   , skipWarmUp
   , reset
+  , Segment
+  , segments
+  , timelineSpan
+  , playheadAt
+  , faderReading
+  , dragFader
+  , dropFader
   ) where
 
 import Prelude
 
-import Data.Array (deleteAt, elem, filter, index, length, modifyAt, range, snoc)
+import Data.Array (deleteAt, drop, elem, filter, index, length, mapWithIndex, modifyAt, range, snoc, zipWith)
 import Data.Foldable (foldl)
-import Data.Int (toNumber)
+import Data.Int (ceil, toNumber)
 import Data.Number (abs)
 import Data.Array.NonEmpty as NEA
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
 import Sim.Advice (advise)
 import Sim.Backend (SimCommand(..), SimView)
 import Sim.Backend as Backend
-import Sim.Link (Event(..), Message(..), eventLabel)
+import Sim.Link (Event(..), FaderMode(..), Message(..), eventLabel, faderScale)
 import Sim.Machine (Outcome(..), Pending)
 import Sim.Machine as Machine
 import Sim.Forecast (forecast)
@@ -370,7 +377,12 @@ hear message st =
 outcome :: State -> Outcome -> State
 outcome st = case _ of
   Accepted _ -> st
-  Refused pending reason -> undo pending st { notice = "Rejected: " <> reason }
+  Refused pending reason -> case pending.event of
+    -- A move of the fader that arrives after the shot has ended is
+    -- refused, and that is not news.
+    FaderTaken _ -> st
+    FaderGiven -> st
+    _ -> undo pending st { notice = "Rejected: " <> reason }
   -- The machine changing state by itself is watched in real time, so
   -- a fast-forwarded session does not race past the moment.
   CameToRest -> sim (SetSpeed 1) st
@@ -383,6 +395,9 @@ lose st pending =
   in
     case pending.event of
       ProfileSelected _ -> (undo pending told) { resend = true }
+      -- The fader is sent many times a second while it is dragged, and
+      -- a move that is lost is followed by the next.
+      FaderTaken _ -> st
       _ -> told
 
 -- | Go back to the recipe from before a request that did not go
@@ -414,3 +429,95 @@ reset :: State -> State
 reset st =
   applyRecipe st.recipe
     (sim (Reset st.params) st { machine = Machine.fresh (toProfile (allShapes st) st.recipe), notice = "" })
+
+------------------------------------------------------------
+-- The timeline and the fader
+------------------------------------------------------------
+
+-- | One step of the shot on the timeline: where the forecast says it
+-- | begins and ends, in seconds from the start of the shot.
+type Segment = { start :: Number, end :: Number }
+
+-- | The steps of the profile the machine runs, laid out by the forecast.
+-- | A step the forecast shot never reached has no length and sits at
+-- | the end.
+segments :: State -> Array Segment
+segments st =
+  let
+    f = st.forecast
+    -- The first step begins with the shot, whenever the forecast took
+    -- its first sample.
+    starts = mapWithIndex (\i start -> if i == 0 then 0.0 else fromMaybe f.seconds start) f.stepStarts
+    ends = drop 1 starts <> [ f.seconds ]
+  in
+    zipWith (\start end -> { start, end: max start end }) starts ends
+
+-- | How many seconds the timeline shows: whole quarter minutes, with
+-- | room after the forecast end, and more if the shot runs on past it.
+timelineSpan :: State -> Number
+timelineSpan st = toNumber (max 2 (ceil ((max st.forecast.seconds (playheadAt st) + 2.0) / 15.0))) * 15.0
+
+-- | How far into the shot the machine is, in seconds, or nothing when
+-- | no shot is running. Between reports it runs on by the page's own
+-- | clock.
+playheadAt :: State -> Number
+playheadAt st = case st.machine.status.shot of
+  Just shot -> max 0.0 (st.machine.at - shot.startedAt + min 0.25 (Machine.silence st.clock st.machine / 1000.0))
+  Nothing -> 0.0
+
+-- | Where the fader is drawn, as a reading on the scale the selector
+-- | has chosen. Under the barista's hand it is where they have dragged
+-- | it. Otherwise it is where the machine says the fader is, which
+-- | during a profile is where the motor has carried it.
+faderReading :: State -> Number
+faderReading st =
+  let
+    scale = faderScale st.machine.status.faderMode
+    width = scale.high - scale.low
+  in
+    case st.hand of
+      Just reading -> reading
+      -- Drawn a hair to one side after each drop, so the slider is set
+      -- again even when the machine's fader has not moved.
+      Nothing -> scale.low + st.machine.status.fader * width + (if st.dropped then width / 10000.0 else 0.0)
+
+-- | The fader dragged to a reading on its scale.
+-- |
+-- | On pressure, during a shot, this takes it in hand: the shot goes to
+-- | manual mode and the pressure follows the fader, between the manual
+-- | limits the machine holds it to. With no shot running, pushing the
+-- | fader up starts one and takes it in hand from the first drop, so
+-- | the whole shot is drawn by hand.
+-- |
+-- | On temperature, during a shot, the water follows the fader and the
+-- | profile's steps carry on. With no shot running there is nothing for
+-- | it to set.
+-- |
+-- | On time the fader only shows, and a hand on it does nothing.
+-- |
+-- | The machine has the last word on all of it: the page asks, and
+-- | shows what the machine then reports.
+dragFader :: Number -> State -> State
+dragFader reading st =
+  let
+    scale = faderScale st.machine.status.faderMode
+    level = clamp scale.low scale.high reading
+    taken = ask (FaderTaken level) Nothing st { hand = Just level, notice = "" }
+  in
+    case st.machine.status.faderMode, st.machine.status.shot of
+      OnTime, _ -> st { notice = "The selector is on time. The fader shows how far the shot has run, and cannot be moved." }
+      _, Just _ -> taken
+      OnTemperature, Nothing -> st { notice = "On temperature the fader sets the water while a shot is running." }
+      OnPressure, Nothing ->
+        if st.pulled then taken
+        else if level >= st.params.config.manualMinBar then
+          -- Start the shot, then take the fader. The two requests reach
+          -- the machine in that order.
+          ask (FaderTaken level) Nothing (request ShotRequested st { hand = Just level, pulled = true })
+        else st { hand = Just level }
+
+-- | The fader let go. It stays where it was left: the shot keeps the
+-- | pressure or the water it was given until it ends, the fader is
+-- | given back to the profile, or the selector is turned.
+dropFader :: State -> State
+dropFader st = st { hand = Nothing, pulled = false, dropped = not st.dropped }

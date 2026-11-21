@@ -223,7 +223,50 @@ pub struct Shot {
     pub step: Step,
     pub started_at: Ms,
     pub step_started_at: Ms,
+    /// What the barista has set by hand with the fader, if anything.
+    pub manual: Option<Hold>,
 }
+
+/// What the fader's travel stands for. A selector knob on the machine
+/// chooses it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum FaderMode {
+    /// The brew pressure, from nothing to `FADER_FULL_BAR`.
+    Pressure = 0,
+    /// The temperature of the water to the group, from `FADER_LOW_C`
+    /// to `FADER_HIGH_C`.
+    Temperature = 1,
+    /// How far through the shot's time it is. The fader only shows
+    /// this: a hand on it changes nothing.
+    Time = 2,
+}
+
+/// A value the barista holds with the fader during a shot.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Hold {
+    /// The brew pressure, in bar. The profile's steps stand still and
+    /// this is the pressure setpoint.
+    Bar(Real),
+    /// The water temperature, in degrees C. The profile's steps carry
+    /// on with their pressures and flows, and this is the water they
+    /// get.
+    Celsius(Real),
+}
+
+/// The pressure at the top of the fader's travel, in bar.
+pub const FADER_FULL_BAR: Real = 10.0;
+
+/// The water temperatures at the bottom and the top of the fader's
+/// travel, in degrees C.
+pub const FADER_LOW_C: Real = 80.0;
+pub const FADER_HIGH_C: Real = 100.0;
+
+/// How briskly the motor moves the fader towards where it should be,
+/// in radians per second. The motion is that of a critically damped
+/// spring: it eases away from rest and eases into its place, and never
+/// overshoots.
+pub const FADER_STIFFNESS: Real = 5.0;
 
 /// What is kept of a shot once it has ended.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -325,6 +368,12 @@ pub struct Config {
     pub shot_timeout_s: Real,
     pub idle_sleep_after_s: Real,
     pub blowdown_after_fills: i32,
+    /// The least and the most pressure the fader can set by hand.
+    pub manual_min_bar: Real,
+    pub manual_max_bar: Real,
+    /// The coolest and the hottest water the fader can set by hand.
+    pub manual_min_c: Real,
+    pub manual_max_c: Real,
 }
 
 /// What the firmware knows about its own hardware and how hard its
@@ -366,6 +415,13 @@ pub enum Event {
     ShotRequested,
     StepAdvanceRequested,
     ShotStopRequested,
+    /// The barista has taken the fader and set it to this reading on
+    /// the scale the selector has chosen: bar or degrees C.
+    FaderTaken(Real),
+    /// The barista has given the fader back: the profile carries on.
+    FaderGiven,
+    /// The selector knob has been turned to this.
+    FaderModeSelected(FaderMode),
     FaultsCleared(ClientKind),
     BlowdownConfirmed,
     WaterWarningAcknowledged,
@@ -400,10 +456,12 @@ pub enum Reject {
     /// The message could not be read: a number out of range for the
     /// field it fills, or a profile with no steps or too many.
     Malformed = 22,
+    /// The selector is on time, where the fader only shows.
+    FaderShowsTime = 23,
 }
 
 impl Reject {
-    pub const ALL: [Reject; 22] = [
+    pub const ALL: [Reject; 23] = [
         Reject::WakeNeedsMode,
         Reject::Faulted,
         Reject::NotAwake,
@@ -426,6 +484,7 @@ impl Reject {
         Reject::AlreadyFaulted,
         Reject::NotASensorFailure,
         Reject::Malformed,
+        Reject::FaderShowsTime,
     ];
 
     pub fn text(self) -> &'static str {
@@ -452,6 +511,7 @@ impl Reject {
             Reject::AlreadyFaulted => "machine is already faulted",
             Reject::NotASensorFailure => "not a sensor failure kind",
             Reject::Malformed => "the message could not be read, or the profile has no steps or more than twelve",
+            Reject::FaderShowsTime => "the selector is on time, where the fader only shows",
         }
     }
 }

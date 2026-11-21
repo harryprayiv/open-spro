@@ -19,12 +19,12 @@ import Effect.Exception (throw)
 import Sim.Advice (advise)
 import Sim.Backend (Backend, SimCommand(..))
 import Sim.Backend as Backend
-import Sim.Controller (Event(..), shotInProgress)
+import Sim.Controller (shotInProgress)
 import Sim.Cup as Cup
 import Sim.Curve as Curve
 import Sim.Flavor as Flavor
 import Sim.Forecast (forecast)
-import Sim.Link (Event, eventLabel)
+import Sim.Link (Event(..), FaderMode(..), eventLabel)
 import Sim.Machine (Machine, Outcome(..))
 import Sim.Machine as Machine
 import Sim.Params as Params
@@ -725,6 +725,90 @@ link = do
   expect "a machine whose clock has gone backwards is taken for a restart"
     (restarted.machine.at < later.machine.at && map _.text (last restarted.machine.happenings) == Just "The machine restarted.")
   expect "and its counters starting again add nothing to the log" (length restarted.machine.history == 3 && length restarted.machine.scope < 5)
+
+  -- The fader. On a profile the motor carries it, eased. Taken in
+  -- hand it is the pressure, between the manual limits.
+  let cfg = Params.defaults.config
+  let manual p = p.machine.status.shot >>= _.manual
+  let target p = fromMaybe 0.0 p.machine.status.pressureTargetBar
+  let
+    watch frames p = foldl
+      ( \acc _ ->
+          let
+            next = frame acc.page
+            moved = abs (next.machine.status.fader - acc.page.machine.status.fader)
+          in
+            { page: next, most: max acc.most moved, top: max acc.top next.machine.status.fader }
+      )
+      { page: p, most: 0.0, top: 0.0 }
+      (replicate frames unit)
+  let followed = watch 400 (asks ShotRequested ready)
+  log ("  on the profile the fader rose to " <> n2 followed.top <> " of its travel, and never moved more than " <> n2 followed.most <> " between reports")
+  expect "on a profile the motor carries the fader up to the pressure asked for" (followed.top > 0.8 && followed.top <= 0.9001)
+  expect "and it moves smoothly: no jump from one report to the next" (followed.most < 0.03)
+  let rested = wait 3000.0 (pass 90000.0 (\p -> isNothing p.machine.status.shot) followed.page)
+  expect "after the shot the fader goes back to rest" (rested.machine.status.fader < 0.01)
+
+  let again2 = pass 60000.0 (\p -> p.machine.status.state == Ready) (tells WarmUp rested)
+  let taken = wait 6000.0 (asks (FaderTaken 6.0) (wait 3000.0 (asks ShotRequested again2)))
+  log ("  taken in hand at 6 bar: setpoint " <> n1 (target taken) <> " bar, measured " <> n1 taken.machine.sensors.brewBar <> " bar")
+  expect "taken in hand, the fader is the pressure setpoint" (manual taken == Just 6.0 && target taken == 6.0 && abs (taken.machine.status.fader - 0.6) < 0.001)
+  let stood = wait 12000.0 taken
+  log ("  12 s later, with the puck full: measured " <> n1 stood.machine.sensors.brewBar <> " bar")
+  expect "and once the puck has filled the pump brings the pressure to it" (abs (stood.machine.sensors.brewBar - 6.0) < 0.5)
+  expect "in manual mode the steps stand still" (map _.stepIndex stood.machine.status.shot == map _.stepIndex taken.machine.status.shot && manual stood == Just 6.0)
+  let high = wait 1000.0 (asks (FaderTaken 50.0) stood)
+  let low = wait 1000.0 (asks (FaderTaken 0.0) high)
+  expect "the machine holds the hand between the manual limits" (manual high == Just cfg.manualMaxBar && manual low == Just cfg.manualMinBar)
+  let drawn = map _.askedBar low.machine.trace
+  expect "the curve drawn by hand is on the page's chart"
+    (length (filter (_ == Just 6.0) drawn) > 100 && length (filter (_ == Just cfg.manualMaxBar) drawn) > 5 && last drawn == Just (Just cfg.manualMinBar))
+  let given = wait 1000.0 (asks FaderGiven low)
+  let risen = wait 3000.0 given
+  log ("  given back at " <> n1 cfg.manualMinBar <> " bar: setpoint " <> n1 (target given) <> " bar after 1 s and " <> n1 (target risen) <> " after 4 s, fader at " <> n2 risen.machine.status.fader)
+  expect "given back, the profile carries on" (manual given == Nothing && isJust given.machine.status.shot && noted "accepted follow the profile" given)
+  let finished = pass 90000.0 (\p -> isNothing p.machine.status.shot) given
+  expect "and the shot ends on its weight as the profile says" (map _.state (last finished.machine.history) == Just StoppedByWeight)
+
+  -- A shot pulled by hand from the first drop: start it and take the
+  -- fader in the same breath, as pushing the fader up from rest does.
+  let hand = pass 60000.0 (\p -> p.machine.status.state == Ready) (tells WarmUp (wait 2000.0 finished))
+  let whole = wait 4000.0 (asks (FaderTaken 5.0) (asks ShotRequested hand))
+  expect "a shot can be pulled by hand from the start" (manual whole == Just 5.0 && noted "accepted the fader" whole)
+  let ended = pass 120000.0 (\p -> isNothing p.machine.status.shot) (wait 2000.0 (asks (FaderTaken 9.0) whole))
+  expect "a shot by hand still stops on its weight" (map _.state (last ended.machine.history) == Just StoppedByWeight)
+  let stray = wait 1000.0 (asks (FaderTaken 7.0) ended)
+  expect "the fader moved with no shot running is refused" (noted "refused the fader: no shot is running" stray)
+  expect "the fader broke no invariant" ((Backend.view stray.backend).violations == [])
+
+  -- The selector knob chooses what the fader stands for.
+  let water p = p.machine.status.shot >>= _.manualC
+  let rewarmed = pass 60000.0 (\p -> p.machine.status.state == Ready) (tells WarmUp (wait 2000.0 stray))
+  let onTemp = wait 500.0 (asks (FaderModeSelected OnTemperature) rewarmed)
+  expect "the selector turns with the machine at rest" (onTemp.machine.status.faderMode == OnTemperature && noted "accepted the selector to temp" onTemp)
+  let shown = wait 4000.0 (asks ShotRequested onTemp)
+  log ("  on temperature the motor carried the fader to " <> n2 shown.machine.status.fader <> " of its travel for water asked for at " <> n1 (fromMaybe 0.0 shown.machine.status.mixTargetC) <> " C")
+  expect "on temperature the motor carries the fader to the water asked for"
+    (abs (shown.machine.status.fader - (fromMaybe 0.0 shown.machine.status.mixTargetC - 80.0) / 20.0) < 0.02)
+  let cooler = wait 2000.0 (asks (FaderTaken 88.0) shown)
+  expect "taken in hand on temperature, the fader is the water asked for"
+    (water cooler == Just 88.0 && cooler.machine.status.mixTargetC == Just 88.0 && manual cooler == Nothing && abs (cooler.machine.status.fader - 0.4) < 0.001)
+  let stepped = pass 60000.0 (\p -> map _.stepIndex p.machine.status.shot > map _.stepIndex cooler.machine.status.shot) cooler
+  expect "and the profile's steps carry on with that water"
+    (map _.stepIndex stepped.machine.status.shot > map _.stepIndex cooler.machine.status.shot && water stepped == Just 88.0)
+  let hot = wait 1000.0 (asks (FaderTaken 150.0) stepped)
+  expect "the machine holds the water between the manual limits" (water hot == Just cfg.manualMaxC)
+  let onTime = wait 500.0 (asks (FaderModeSelected OnTime) hot)
+  expect "turning the selector lets go of what the hand held" (water onTime == Nothing && onTime.machine.status.faderMode == OnTime && isJust onTime.machine.status.shot)
+  let locked = wait 1000.0 (asks (FaderTaken 0.9) onTime)
+  expect "on time a hand on the fader is refused" (noted "refused the fader: the selector is on time, where the fader only shows" locked)
+  let run5 = wait 5000.0 locked
+  log ("  on time the fader moved from " <> n2 locked.machine.status.fader <> " to " <> n2 run5.machine.status.fader <> " of its travel in 5 s")
+  expect "on time the motor carries the fader along with the clock" (run5.machine.status.fader > locked.machine.status.fader + 0.02)
+  let timed = pass 120000.0 (\p -> isNothing p.machine.status.shot) run5
+  let turned = wait 3000.0 (asks (FaderModeSelected OnPressure) timed)
+  expect "the shot ends and the fader goes back to rest" (turned.machine.status.fader < 0.01 && turned.machine.status.faderMode == OnPressure)
+  expect "the selector broke no invariant" ((Backend.view turned.backend).violations == [])
 
   -- The same run gives the same messages.
   let rerun = pass 90000.0 (\p -> length p.machine.history == 1) (wait 5000.0 (asks ShotRequested ready))

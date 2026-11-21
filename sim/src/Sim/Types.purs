@@ -271,6 +271,12 @@ type Config =
   , shotTimeout :: Number
   , idleSleepAfter :: Number
   , blowdownAfterFills :: Int
+  -- The least and the most pressure the fader can set by hand.
+  , manualMinBar :: Number
+  , manualMaxBar :: Number
+  -- The coolest and the hottest water the fader can set by hand.
+  , manualMinC :: Number
+  , manualMaxC :: Number
   }
 
 defaultConfig :: Config
@@ -298,6 +304,10 @@ defaultConfig =
   , shotTimeout: 120.0
   , idleSleepAfter: 2700.0
   , blowdownAfterFills: 200
+  , manualMinBar: 1.0
+  , manualMaxBar: 9.5
+  , manualMinC: 85.0
+  , manualMaxC: 97.0
   }
 
 -- | What the firmware knows about its own hardware and how hard its

@@ -12,7 +12,7 @@ import Data.Maybe (Maybe)
 import Sim.Advice (Advice)
 import Sim.Backend (Backend, LinkSettings)
 import Sim.Forecast (Forecast)
-import Sim.Layout (View)
+import Sim.Layout (Edge, Sizes, View)
 import Sim.Link (Event)
 import Sim.Machine (Machine)
 import Sim.Params (Group, Params)
@@ -45,6 +45,15 @@ type State =
   -- A change of recipe went unanswered, so the machine may not have
   -- it. It is sent again when the machine is next heard from.
   , resend :: Boolean
+  -- The fader while the barista's hand is on it: the reading, on the
+  -- scale the selector has chosen, it has been dragged to. The page shows this at once and the
+  -- machine's own report of the fader catches up.
+  , hand :: Maybe Number
+  -- This drag of the fader has already asked for a shot to start.
+  , pulled :: Boolean
+  -- Flips each time the fader is let go, so the slider is drawn afresh
+  -- and shows where the machine says the fader is.
+  , dropped :: Boolean
   , notice :: String
   , recipe :: Recipe
   , saved :: Array Recipe
@@ -64,10 +73,10 @@ type State =
   -- The recipe settings the barista holds fixed, by key. The machine's
   -- suggestions leave these alone.
   , locks :: Array String
-  -- Widths of the controls and bench panes in pixels, set by dragging
-  -- the gutters, and the drag in progress.
-  , sizes :: { controls :: Number, bench :: Number }
-  , drag :: Maybe { gutter :: Int, x :: Int }
+  -- The sizes set by dragging the edges between things, and the drag
+  -- in progress: its edge and where the pointer last was.
+  , sizes :: Sizes
+  , drag :: Maybe { edge :: Edge, x :: Int, y :: Int }
   -- The pane a phone shows: 0 machine, 1 controls, 2 bench.
   , phone :: Int
   -- What the present recipe would do on the present machine. It is
@@ -85,6 +94,9 @@ data Action
   | SetSpeed Int
   | Disturb (Disturbance -> Disturbance)
   | SetLink (LinkSettings -> LinkSettings)
+  -- The fader dragged to a reading on its scale, and let go.
+  | FaderDrag Number
+  | FaderDrop
   | SkipWarmUp
   | Reset
   -- A number box: its key, the text typed, and what to do with a number.
@@ -95,6 +107,6 @@ data Action
   | SavePreset
   | DeletePreset String
   | ToggleTheme
-  | GutterDown Int MouseEvent
+  | GutterDown Edge MouseEvent
   | GutterMove MouseEvent
   | GutterUp

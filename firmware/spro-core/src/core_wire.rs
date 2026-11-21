@@ -31,14 +31,17 @@ pub const EV_CLEAR_FAULTS: u32 = 6;
 pub const EV_BLOWDOWN: u32 = 7;
 pub const EV_WATER_ACK: u32 = 8;
 pub const EV_SENSOR_FAILED: u32 = 9;
+pub const EV_FADER_TAKEN: u32 = 10;
+pub const EV_FADER_GIVEN: u32 = 11;
+pub const EV_FADER_MODE: u32 = 12;
 
 pub const SENSORS_LEN: usize = 11;
-pub const CONFIG_LEN: usize = 23;
+pub const CONFIG_LEN: usize = 27;
 pub const TUNING_LEN: usize = 16;
 pub const PROFILE_HEAD_LEN: usize = 5;
 pub const STEP_LEN: usize = 9;
 pub const PROFILE_MAX_LEN: usize = PROFILE_HEAD_LEN + MAX_STEPS * STEP_LEN;
-pub const STATUS_HEAD_LEN: usize = 34;
+pub const STATUS_HEAD_LEN: usize = 38;
 pub const FAULT_LEN: usize = 3;
 pub const STATUS_LEN: usize = STATUS_HEAD_LEN + MAX_FAULTS * FAULT_LEN;
 
@@ -128,6 +131,14 @@ impl<'a> Reader<'a> {
         })
     }
 
+    pub fn fader_mode(&mut self) -> Read<FaderMode> {
+        Ok(match self.index(2)? {
+            0 => FaderMode::Pressure,
+            1 => FaderMode::Temperature,
+            _ => FaderMode::Time,
+        })
+    }
+
     pub fn client_kind(&mut self) -> Read<ClientKind> {
         Ok(match self.index(3)? {
             0 => ClientKind::Paddle,
@@ -192,6 +203,10 @@ impl<'a> Reader<'a> {
             shot_timeout_s: self.real()?,
             idle_sleep_after_s: self.real()?,
             blowdown_after_fills: self.whole()?,
+            manual_min_bar: self.real()?,
+            manual_max_bar: self.real()?,
+            manual_min_c: self.real()?,
+            manual_max_c: self.real()?,
         })
     }
 
@@ -273,6 +288,9 @@ impl<'a> Reader<'a> {
             EV_BLOWDOWN => Event::BlowdownConfirmed,
             EV_WATER_ACK => Event::WaterWarningAcknowledged,
             EV_SENSOR_FAILED => Event::SensorFailed(self.fault_kind()?),
+            EV_FADER_TAKEN => Event::FaderTaken(self.real()?),
+            EV_FADER_GIVEN => Event::FaderGiven,
+            EV_FADER_MODE => Event::FaderModeSelected(self.fader_mode()?),
             _ => return Err(Reject::Malformed),
         })
     }
@@ -332,6 +350,22 @@ pub fn write_status(c: &Controller, out: &mut [f64]) {
         c.heater_draw_watts() as f64,
         c.fault_count as f64,
         c.flow_ml_per_s as f64,
+        match c.shot {
+            Some(Shot {
+                manual: Some(Hold::Bar(bar)),
+                ..
+            }) => bar as f64,
+            _ => f64::NAN,
+        },
+        c.fader as f64,
+        c.fader_mode as u8 as f64,
+        match c.shot {
+            Some(Shot {
+                manual: Some(Hold::Celsius(celsius)),
+                ..
+            }) => celsius as f64,
+            _ => f64::NAN,
+        },
     ];
     out[..STATUS_HEAD_LEN].copy_from_slice(&head);
     for (i, place) in out[STATUS_HEAD_LEN..STATUS_LEN].chunks_exact_mut(FAULT_LEN).enumerate() {

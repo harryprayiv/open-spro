@@ -13,6 +13,7 @@ module Sim.View.Svg
   , label
   , polyline
   , texture
+  , fitted
   , sheen
   ) where
 
@@ -76,6 +77,23 @@ texture name file tile =
     ]
     [ node "image"
         [ at "href" file, at "width" (num tile), at "height" (num tile)
+        , at "preserveAspectRatio" "xMidYMid slice"
+        ]
+        []
+    ]
+
+-- | One image shrunk to cover a single rectangle, for use inside
+-- | `defs`. The rectangle is the one the fill is meant for: its corner,
+-- | width and height. The image keeps its proportions and is cropped
+-- | where it overhangs.
+fitted :: forall w i. String -> String -> Number -> Number -> Number -> Number -> HH.HTML w i
+fitted name file x y w h =
+  node "pattern"
+    [ at "id" name, at "patternUnits" "userSpaceOnUse"
+    , at "x" (num x), at "y" (num y), at "width" (num w), at "height" (num h)
+    ]
+    [ node "image"
+        [ at "href" file, at "width" (num w), at "height" (num h)
         , at "preserveAspectRatio" "xMidYMid slice"
         ]
         []

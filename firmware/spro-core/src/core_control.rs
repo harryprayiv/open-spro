@@ -58,6 +58,12 @@ pub struct Controller {
     /// Flow into the group as estimated at the last cycle. The machine
     /// has no flow meter, so this is the only flow it can report.
     pub flow_ml_per_s: Real,
+    /// Where the fader is along its travel, from 0 to 1, and how fast
+    /// the motor is moving it, in travels per second.
+    pub fader: Real,
+    pub fader_speed: Real,
+    /// What the selector knob says the fader's travel stands for.
+    pub fader_mode: FaderMode,
 }
 
 #[derive(Clone, Copy)]
@@ -108,6 +114,9 @@ impl Controller {
             pump_integral: 0.0,
             mix_trim: 0.0,
             flow_ml_per_s: 0.0,
+            fader: 0.0,
+            fader_speed: 0.0,
+            fader_mode: FaderMode::Pressure,
         }
     }
 
@@ -349,6 +358,12 @@ impl Controller {
                     step: next,
                     started_at: shot.started_at,
                     step_started_at: now,
+                    // A temperature held by hand stays held from step
+                    // to step. A pressure does not.
+                    manual: match shot.manual {
+                        Some(Hold::Celsius(c)) => Some(Hold::Celsius(c)),
+                        _ => None,
+                    },
                 };
                 self.shot = Some(advanced);
                 self.enter_step(s, next);
@@ -448,6 +463,7 @@ impl Controller {
                     step: first,
                     started_at: now,
                     step_started_at: now,
+                    manual: None,
                 };
                 self.shot = Some(shot);
                 self.last_activity_at = now;
@@ -479,6 +495,59 @@ impl Controller {
                     Ok(())
                 }
             },
+
+            // rule TakeFader
+            Event::FaderTaken(reading) => match (self.shot, self.fader_mode) {
+                (_, FaderMode::Time) => Err(Reject::FaderShowsTime),
+                (None, _) => Err(Reject::NoShotRunning),
+                (Some(shot), FaderMode::Pressure) => {
+                    let level = self.manual_level(reading);
+                    self.shot = Some(Shot {
+                        manual: Some(Hold::Bar(level)),
+                        ..shot
+                    });
+                    // Manual mode is pressure on the pump, whatever the
+                    // step was doing.
+                    self.act.bypass_valve = TwoWay::Closed;
+                    self.act.pump = PumpMode::PressureControl;
+                    self.pace_trim_bar = 0.0;
+                    self.flow_target_ml_per_s = None;
+                    self.pressure_target_bar = Some(level);
+                    Ok(())
+                }
+                (Some(shot), FaderMode::Temperature) => {
+                    let level = self.manual_water(reading);
+                    self.shot = Some(Shot {
+                        manual: Some(Hold::Celsius(level)),
+                        ..shot
+                    });
+                    self.mix_target_c = Some(level);
+                    Ok(())
+                }
+            },
+
+            // rule GiveFaderBack
+            Event::FaderGiven => match self.shot {
+                None => Err(Reject::NoShotRunning),
+                Some(shot) => {
+                    self.give_back(now, s, shot);
+                    Ok(())
+                }
+            },
+
+            // rule TurnSelector
+            Event::FaderModeSelected(mode) => {
+                // Whatever the hand was holding on the old scale is
+                // let go, so the fader never carries a reading from one
+                // scale onto another.
+                if mode != self.fader_mode {
+                    if let Some(shot) = self.shot {
+                        self.give_back(now, s, shot);
+                    }
+                    self.fader_mode = mode;
+                }
+                Ok(())
+            }
 
             // rule ClearFaults
             Event::FaultsCleared(client) => {
@@ -559,6 +628,100 @@ impl Controller {
         self.run_shot(dt, now, s);
         self.allocate_heaters(now, s);
         self.flow_ml_per_s = self.flow_estimate(s);
+        self.move_fader(dt, now, s);
+    }
+
+    /// The profile takes back whatever the hand was holding. After a
+    /// pressure the step begins again from where the hand left it and
+    /// ramps to its own target. After a temperature the step was never
+    /// stopped, and the water goes back to what the step asks for.
+    fn give_back(&mut self, now: Ms, s: &Sensors, shot: Shot) {
+        match shot.manual {
+            Some(Hold::Bar(_)) => {
+                let resumed = Shot {
+                    manual: None,
+                    step_started_at: now,
+                    ..shot
+                };
+                self.shot = Some(resumed);
+                self.enter_step(s, resumed.step);
+                self.follow_ramp(now, resumed);
+            }
+            Some(Hold::Celsius(_)) => {
+                let resumed = Shot { manual: None, ..shot };
+                self.shot = Some(resumed);
+                self.follow_ramp(now, resumed);
+            }
+            None => {}
+        }
+    }
+
+    /// A pressure asked for by hand, held between the manual limits and
+    /// never past a bar short of the pressure limit.
+    fn manual_level(&self, bar: Real) -> Real {
+        let most = min(self.cfg.manual_max_bar, self.cfg.brew_pressure_limit_bar - 1.0);
+        clamp(min(self.cfg.manual_min_bar, most), most, bar)
+    }
+
+    /// A water temperature asked for by hand, held between the manual
+    /// limits and never past a degree short of the mix limit.
+    fn manual_water(&self, c: Real) -> Real {
+        let most = min(self.cfg.manual_max_c, self.cfg.mix_limit_c - 1.0);
+        clamp(min(self.cfg.manual_min_c, most), most, c)
+    }
+
+    /// The fader shows what the selector has chosen. On pressure, the
+    /// motor carries it to the pressure setpoint in a pressure step and
+    /// to the measured pressure in the steps that have none. On
+    /// temperature, to the water temperature asked for. On time, to how
+    /// much of the shot's target time has passed, or of the shot
+    /// timeout when the profile has no target time. With no shot
+    /// running it goes back to rest. The motion is eased, so a setpoint
+    /// that jumps moves the fader smoothly. While the hand holds a
+    /// value the motor is off and the fader is wherever the hand has
+    /// put it.
+    fn move_fader(&mut self, dt: Real, now: Ms, s: &Sensors) {
+        let along = |low: Real, high: Real, value: Real| clamp(0.0, 1.0, (value - low) / (high - low));
+        let held = match self.shot {
+            Some(Shot {
+                manual: Some(Hold::Bar(bar)),
+                ..
+            }) => Some(along(0.0, FADER_FULL_BAR, self.manual_level(bar))),
+            Some(Shot {
+                manual: Some(Hold::Celsius(c)),
+                ..
+            }) => Some(along(FADER_LOW_C, FADER_HIGH_C, self.manual_water(c))),
+            _ => None,
+        };
+        match held {
+            Some(place) => {
+                self.fader = place;
+                self.fader_speed = 0.0;
+            }
+            None => {
+                let wanted = match (self.shot, self.fader_mode) {
+                    (None, _) => 0.0,
+                    (Some(_), FaderMode::Pressure) => {
+                        along(0.0, FADER_FULL_BAR, self.pressure_target_bar.unwrap_or(s.brew_bar))
+                    }
+                    (Some(shot), FaderMode::Temperature) => along(
+                        FADER_LOW_C,
+                        FADER_HIGH_C,
+                        self.mix_target_c.unwrap_or(shot.step.target_c),
+                    ),
+                    (Some(shot), FaderMode::Time) => {
+                        let whole = self.selected.target_seconds.unwrap_or(self.cfg.shot_timeout_s);
+                        along(0.0, max(1.0, whole), elapsed(shot.started_at, now))
+                    }
+                };
+                // The place moves at the speed it had, and then the
+                // speed changes, so the fader leaves rest at no speed.
+                let pull = FADER_STIFFNESS * FADER_STIFFNESS * (wanted - self.fader)
+                    - 2.0 * FADER_STIFFNESS * self.fader_speed;
+                self.fader = clamp(0.0, 1.0, self.fader + self.fader_speed * dt);
+                self.fader_speed += pull * dt;
+            }
+        }
     }
 
     /// rules OverLimit, OverPressure, MixTooHot, InletLostDuringShot and
@@ -652,6 +815,13 @@ impl Controller {
         // rule StopOnTimeout
         } else if elapsed(shot.started_at, now) >= self.cfg.shot_timeout_s {
             self.end_shot(now, s, ShotState::StoppedByTime, shot);
+        } else if let Some(Hold::Bar(bar)) = shot.manual {
+            // Manual mode: the fader is the pressure setpoint, held
+            // between the manual limits. The steps stand still, and the
+            // water stays at the temperature of the step the shot was in.
+            self.pressure_target_bar = Some(self.manual_level(bar));
+            self.pump_law(dt, s, StepMode::Pressure);
+            self.mix_law(dt, now, s, shot);
         // rules StepExitsOnTime, StepExitsOnPressure and StepExitsOnWeight
         } else if elapsed(shot.step_started_at, now) >= shot.step.max_duration_s
             || reached(shot.step.exit_above_bar, s.brew_bar)
@@ -661,7 +831,11 @@ impl Controller {
         } else {
             self.pace_law(dt, now, s, shot);
             self.follow_ramp(now, shot);
-            self.pump_law(dt, s, shot.step);
+            // A water temperature held by hand stands in for the step's.
+            if let Some(Hold::Celsius(c)) = shot.manual {
+                self.mix_target_c = Some(self.manual_water(c));
+            }
+            self.pump_law(dt, s, shot.step.mode);
             self.mix_law(dt, now, s, shot);
         }
     }
@@ -719,8 +893,8 @@ impl Controller {
     /// filling the dry puck does not wind it up. Flow steps: pump speed
     /// from the target flow plus the slip expected at the present
     /// pressure.
-    fn pump_law(&mut self, dt: Real, s: &Sensors, step: Step) {
-        match step.mode {
+    fn pump_law(&mut self, dt: Real, s: &Sensors, mode: StepMode) {
+        match mode {
             StepMode::LinePrebrew => {}
             StepMode::Pressure => {
                 let err = self.pressure_target_bar.unwrap_or(9.0) - s.brew_bar;

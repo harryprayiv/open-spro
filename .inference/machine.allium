@@ -63,6 +63,12 @@ enum FaultKind {
 
 enum ClientKind { paddle | remote | service | supervisor }
 
+-- What the fader's travel stands for. A selector knob on the left
+-- flank of the machine chooses it. On pressure and on temperature the
+-- fader shows a setpoint and can be taken in hand to set it. On time
+-- it shows how far through its time the shot is, and cannot be set.
+enum FaderMode { on_pressure | on_temperature | on_time }
+
 ------------------------------------------------------------
 -- Configuration
 ------------------------------------------------------------
@@ -96,6 +102,14 @@ config {
 
     fill_timeout: Duration = 90.seconds
     shot_timeout: Duration = 120.seconds
+    -- The least and the most pressure the fader can set by hand.
+    manual_min_bar: Decimal = 1.0
+    manual_max_bar: Decimal = 9.5
+    -- The coolest and the hottest water the fader can set by hand.
+    manual_min_c: Decimal = 85.0
+    manual_max_c: Decimal = 97.0
+    -- water set by hand is never set closer to mix_limit_c than this
+    mix_headroom_c: Decimal = 1.0
     idle_sleep_after: Duration = 45.minutes
     blowdown_after_fills: Integer = 200
 }
@@ -144,6 +158,9 @@ entity Machine {
     selected_profile: Profile?
     group_target_c: Decimal
     mix_target_c: Decimal?
+    -- Where the selector knob stands. It stays where it is put, through
+    -- sleep and from shot to shot.
+    fader_mode: FaderMode
     pressure_target_bar: Decimal?
     -- how far pacing has moved the pressure setpoint from the profile
     pace_trim_bar: Decimal
@@ -250,8 +267,20 @@ entity Shot {
     ramp_from_bar: Decimal
     ramp_from_ml_per_s: Decimal
 
-    ramp_done: step.curve = jump or step_started_at + step.ramp <= now
-    step_expired: step_started_at + step.max_duration <= now
+    -- The fader. On a profile the motor carries it to show what the
+    -- selector has chosen. Taken in hand on pressure, the shot is in
+    -- manual mode: manual_bar is the pressure setpoint, and the
+    -- profile's steps stand still, so no ramp finishes and no step
+    -- expires or exits. Taken in hand on temperature, manual_c is the
+    -- water the group gets and the steps carry on. At most one of the
+    -- two is held (invariant OneHoldAtATime).
+    manual_bar: Decimal?
+    manual_c: Decimal?
+
+    by_hand: manual_bar != null
+    water_by_hand: manual_c != null
+    ramp_done: manual_bar = null and (step.curve = jump or step_started_at + step.ramp <= now)
+    step_expired: manual_bar = null and step_started_at + step.max_duration <= now
 
     step_pressure_reached:
         step.exit_above_bar != null and machine.brew_bar >= step.exit_above_bar
@@ -544,7 +573,9 @@ rule EnterFlowStep {
 -- and the finish (the three RampFinished rules).
 rule StartTemperatureRamp {
     when: RampStarted(shot)
-    requires: shot.state = running
+    requires:
+        shot.state = running
+        not shot.water_by_hand
     ensures: shot.machine.mix_target_c = shot.ramp_from_c
 }
 
@@ -568,7 +599,9 @@ rule StartFlowRamp {
 -- so these fire in the same instant as the rules above and win.
 rule TemperatureRampFinished {
     when: shot: Shot.ramp_done
-    requires: shot.state = running
+    requires:
+        shot.state = running
+        not shot.water_by_hand
     ensures: shot.machine.mix_target_c = shot.step.target_c
 }
 
@@ -672,6 +705,84 @@ rule AdvanceByUser {
     when: StepAdvanceRequested(client, shot)
     requires: shot.state = running
     ensures: StepFinished(shot: shot)
+}
+
+-- The fader. A barista who takes it sets the brew pressure by hand,
+-- whatever step the shot was in: the pump goes to pressure control and
+-- the setpoint is the fader's, held between manual_min_bar and
+-- manual_max_bar and never within pressure_headroom_bar of the brew
+-- pressure limit. The steps stand still, the water stays at the
+-- temperature of the step the shot was in, and pacing is off. The shot
+-- still stops on weight, on the shot timeout and by hand. The fader
+-- stays where it is left: letting go of it changes nothing.
+rule TakeFader {
+    when: FaderTaken(client, shot, bar)
+    requires:
+        shot.state = running
+        shot.machine.fader_mode = on_pressure
+        bar >= config.manual_min_bar
+        bar <= config.manual_max_bar
+    ensures:
+        shot.manual_bar = bar
+        shot.machine.pressure_target_bar = bar
+        shot.machine.pace_trim_bar = 0
+}
+
+-- With the selector on temperature, a barista who takes the fader sets
+-- the water to the group by hand, held between manual_min_c and
+-- manual_max_c and never within mix_headroom_c of the mix limit. The
+-- reading the event carries is in degrees C. The profile's steps carry
+-- on with their pressures and flows, pacing stays on, and the held
+-- water stays held from step to step.
+rule TakeFaderForWater {
+    when: FaderTaken(client, shot, celsius)
+    requires:
+        shot.state = running
+        shot.machine.fader_mode = on_temperature
+        celsius >= config.manual_min_c
+        celsius <= config.manual_max_c
+        celsius <= config.mix_limit_c - config.mix_headroom_c
+    ensures:
+        shot.manual_c = celsius
+        shot.machine.mix_target_c = celsius
+}
+
+-- Given back, the water goes back to what the step asks for. The step
+-- was never stopped and is not begun again.
+rule GiveWaterBack {
+    when: FaderGiven(client, shot)
+    requires:
+        shot.state = running
+        shot.water_by_hand
+    ensures:
+        shot.manual_c = null
+}
+
+-- The selector knob. It turns at any time, in any state. A value held
+-- by hand on the old scale is let go first, as if the fader had been
+-- given back, so a reading never carries from one scale to another.
+-- With the selector on time no rule answers FaderTaken: the fader only
+-- shows.
+rule TurnSelector {
+    when: FaderModeSelected(client, machine, mode)
+    requires: machine.fader_mode != mode
+    ensures:
+        machine.fader_mode = mode
+        for shot in machine.running_shots:
+            FaderGiven(client: client, shot: shot)
+}
+
+-- Given back, the step the shot was in begins again and ramps to its
+-- own target from where the hand left the pressure.
+rule GiveFaderBack {
+    when: FaderGiven(client, shot)
+    requires:
+        shot.state = running
+        shot.by_hand
+    ensures:
+        shot.manual_bar = null
+        shot.step_started_at = now
+        StepEntered(shot: shot)
 }
 
 rule EndShot {
@@ -838,6 +949,28 @@ invariant NoFillDuringShot {
         m.shot_in_progress implies m.fill_valve = closed
 }
 
+-- The fader holds one thing at a time, and only what the selector
+-- stands on.
+invariant OneHoldAtATime {
+    for m in Machines:
+        for shot in m.running_shots:
+            not (shot.by_hand and shot.water_by_hand)
+}
+
+invariant HoldMatchesSelector {
+    for m in Machines:
+        for shot in m.running_shots:
+            (shot.by_hand implies m.fader_mode = on_pressure)
+            and (shot.water_by_hand implies m.fader_mode = on_temperature)
+}
+
+invariant HeldWaterUnderLimit {
+    for m in Machines:
+        for shot in m.running_shots:
+            shot.water_by_hand implies
+                shot.manual_c <= config.mix_limit_c - config.mix_headroom_c
+}
+
 invariant OneShotAtATime {
     for m in Machines:
         m.running_shots.count <= 1
@@ -859,8 +992,13 @@ actor Technician {
     identified_by: Client where kind = service
 }
 
--- The physical paddle: left is off, centre is start or next step,
--- right is stop.
+-- The controls on the front of the machine. They were a
+-- three-position paddle and are now a button on the group and a
+-- motorised fader that knows when it is touched. The button starts the
+-- profile and stops a shot. A selector knob chooses what the fader
+-- stands for: the pressure the shot is being driven to, the water it
+-- is getting, or how far through its time it is. On the first two the
+-- fader taken in hand sets what it shows.
 surface Paddle {
     facing barista: Barista
     context machine: Machine
@@ -873,6 +1011,9 @@ surface Paddle {
         ShotRequested(barista, machine, profile)
         StepAdvanceRequested(barista, shot)
         ShotStopRequested(barista, shot)
+        FaderTaken(barista, shot, bar)
+        FaderGiven(barista, shot)
+        FaderModeSelected(barista, machine, mode)
 }
 
 -- The phone or browser page, reached through the Pi.
@@ -1043,3 +1184,52 @@ surface PaceLoop {
 --     The status also carries the controller's own estimate of flow
 --     into the group, which is the only flow a machine with no flow
 --     meter can report.
+-- 16. The fader. These are not decided:
+--     a. The simulator's page offers the fader, and starting a shot, to
+--        whoever is at the page. Question 1 keeps shot start off
+--        RemotePanel because a shot needs a person at the machine. The
+--        same reasoning says the fader belongs to the Paddle surface
+--        alone on the real machine, and the page should only show it.
+--     b. TakeFader requires the pressure to be within the manual
+--        limits. The crate instead accepts any pressure and holds it to
+--        the limits, because a fader's travel is wider than the limits
+--        and a hand cannot be refused. One of the two has to change.
+--     c. How the motor moves the fader on a profile is a control law:
+--        the crate eases it like a critically damped spring, so it
+--        leaves rest at no speed and never overshoots. Only that it
+--        goes back to rest with no shot running would be worth an
+--        invariant, and none is written.
+--     d. On pressure, in a flow step or a line pre-brew step, which
+--        have no pressure setpoint, the motor carries the fader to the
+--        measured pressure.
+--     e. In manual mode nothing limits how long the barista keeps water
+--        on the puck but shot_timeout.
+--     f. The hardware is a motorised fader with touch sense in place of
+--        the paddle (bom.csv E08), with its motor away from the group.
+--        It needs an analogue input, a motor driver and a touch input,
+--        and the ESP32-C6 pin budget in docs/design.md has two pins
+--        spare. The selector knob needs a three-position rotary switch
+--        and two more inputs, or one analogue input on a resistor
+--        ladder, and is in neither the BOM nor the pin budget.
+--     g. The selector. These are not decided:
+--        - The scales are fixed in the crate: 0 to 10 bar, 80 to 100 C,
+--          and on time the whole of the profile's target time, or of
+--          shot_timeout when the profile has none. A 30 s shot with no
+--          target time moves the fader a quarter of its travel.
+--        - With no shot running the fader rests at the bottom on every
+--          scale. On temperature it could instead show the water the
+--          selected profile will ask for.
+--        - On temperature the fader sets the mix water, which answers
+--          in a second or two. It does not move the group block or the
+--          reservoir, so water asked for above what the reservoir can
+--          give is not reached, and nothing says so.
+--        - TakeFaderForWater has the same mismatch as 16b: the spec
+--          requires the reading within the limits and the crate holds
+--          any reading to them.
+--        - Given back or let go by the selector in a step that was
+--          entered while the water was held, the water ramps to the
+--          step's target from the held value, because that is what the
+--          step recorded as ramp_from_c. The spec's GiveWaterBack says
+--          only that the hold ends.
+--        - Time is the only third position. Flow is the obvious fourth
+--          and waits on the flow meter.

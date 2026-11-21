@@ -13,7 +13,7 @@ import Control.Monad.Rec.Class (forever)
 import Data.Array (filter, length, snoc)
 import Data.Array.NonEmpty as NEA
 import Data.Int (toNumber)
-import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Number as Number
 import Data.String (Pattern(..), joinWith, split, trim)
 import Data.Time.Duration (Milliseconds(..))
@@ -26,7 +26,7 @@ import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Sim.Backend as Backend
 import Sim.Machine as Machine
-import Sim.Layout (BenchTab(..), Tab(..), benchTabs, benchTitle, defaultView, tabTitle, tabs)
+import Sim.Layout (BenchTab(..), Edge(..), Tab(..), benchTabs, benchTitle, defaultSizes, defaultView, tabTitle, tabs)
 import Sim.Layout as Layout
 import Sim.Forecast (forecast)
 import Sim.Model (Action(..), State, Theme(..))
@@ -38,12 +38,12 @@ import Sim.Recipe as Recipe
 import Sim.Profiles as Profiles
 import Sim.Shapes as Shapes
 import Sim.Store as Store
-import Sim.Update (applyRecipe, defaultLocks, refreshForecast, request, reset, sim, simView, skipWarmUp, tick)
+import Sim.Update (applyRecipe, defaultLocks, dragFader, dropFader, refreshForecast, request, reset, sim, simView, skipWarmUp, tick)
 import Sim.View.Bench (designer, scope, settings)
 import Sim.View.Panels (brew, cup, faults, machineView, readings)
 import Sim.View.Widgets (chosen, cls, clock, segmented)
 import Web.Event.Event (preventDefault)
-import Web.UIEvent.MouseEvent (clientX, toEvent)
+import Web.UIEvent.MouseEvent (clientX, clientY, toEvent)
 
 recipesKey :: String
 recipesKey = "espresso-sim.recipes"
@@ -66,17 +66,6 @@ defaultRecipe = Recipe.house
 sizesKey :: String
 sizesKey = "espresso-sim.sizes"
 
-defaultSizes :: { controls :: Number, bench :: Number }
-defaultSizes = { controls: 560.0, bench: 420.0 }
-
-readSizes :: String -> Maybe { controls :: Number, bench :: Number }
-readSizes text = case split (Pattern ",") text of
-  [ a, b ] -> do
-    controls <- Number.fromString a
-    bench <- Number.fromString b
-    pure { controls: clamp 320.0 1200.0 controls, bench: clamp 260.0 900.0 bench }
-  _ -> Nothing
-
 locksKey :: String
 locksKey = "espresso-sim.locks"
 
@@ -89,6 +78,9 @@ component =
         , clock: 0.0
         , params: Params.defaults
         , resend: false
+        , hand: Nothing
+        , pulled: false
+        , dropped: false
         , notice: ""
         , recipe: defaultRecipe
         , saved: []
@@ -152,7 +144,7 @@ handleAction = case _ of
       , view = maybe defaultView Layout.decode view
       , theme = if theme == Just "night" then Night else Day
       , shapes = maybe [] Shapes.decode shapes
-      , sizes = fromMaybe defaultSizes (sizes >>= readSizes)
+      , sizes = maybe defaultSizes Layout.decodeSizes sizes
       , locks = maybe defaultLocks (filter (_ /= "") <<< split (Pattern ",")) locks
       , params = stored
       , backend = Backend.create stored
@@ -173,6 +165,10 @@ handleAction = case _ of
     H.modify_ (sim (Backend.Disturb change))
   SetLink change ->
     H.modify_ (sim (Backend.SetLink change))
+  FaderDrag bar ->
+    H.modify_ (dragFader bar)
+  FaderDrop ->
+    H.modify_ dropFader
   SkipWarmUp ->
     H.modify_ skipWarmUp
   Reset ->
@@ -207,10 +203,10 @@ handleAction = case _ of
     let theme = if st.theme == Day then Night else Day
     H.liftEffect (Store.save themeKey (if theme == Night then "night" else "day"))
     H.modify_ _ { theme = theme }
-  GutterDown gutter event -> do
+  GutterDown edge event -> do
     -- Cancelling the press stops the browser selecting text as it drags.
     H.liftEffect (preventDefault (toEvent event))
-    H.modify_ _ { drag = Just { gutter, x: clientX event } }
+    H.modify_ _ { drag = Just { edge, x: clientX event, y: clientY event } }
   GutterMove event -> do
     st <- H.get
     case st.drag of
@@ -218,22 +214,15 @@ handleAction = case _ of
       Just d ->
         let
           x = clientX event
-          moved = toNumber (x - d.x)
-          sizes =
-            if d.gutter == 0 then st.sizes { controls = clamp 320.0 1200.0 (st.sizes.controls - moved) }
-            else st.sizes { bench = clamp 260.0 900.0 (st.sizes.bench - moved) }
+          y = clientY event
+          sizes = Layout.dragEdge d.edge (toNumber (x - d.x)) (toNumber (y - d.y)) st.sizes
         in
-          H.modify_ _ { sizes = sizes, drag = Just d { x = x } }
+          H.modify_ _ { sizes = sizes, drag = Just d { x = x, y = y } }
   GutterUp -> do
     st <- H.get
     when (isJust st.drag) do
-      H.liftEffect (Store.save sizesKey (show st.sizes.controls <> "," <> show st.sizes.bench))
+      H.liftEffect (Store.save sizesKey (Layout.encodeSizes st.sizes))
       H.modify_ _ { drag = Nothing }
-
--- | The pane widths as CSS variables. The stylesheet uses them on a wide
--- | screen and ignores them on a phone.
-sizeStyle :: State -> String
-sizeStyle st = "--controls: " <> show st.sizes.controls <> "px; --bench: " <> show st.sizes.bench <> "px"
 
 -- | Shown only on a narrow screen: one pane at a time, chosen here.
 phoneBar :: forall m. State -> H.ComponentHTML Action () m
@@ -257,6 +246,9 @@ render st =
     wrong = problems (Machine.silence st.clock m) m simulated
     night = st.theme == Night
     open = st.view.benchOpen
+    dragging = case st.drag of
+      Just d -> if Layout.upright d.edge then " dragging" else " dragging flat"
+      Nothing -> ""
     count = length wrong.lines
   in
     HH.div [ cls ("page " <> (if night then "theme-night" else "theme-day")) ]
@@ -287,15 +279,15 @@ render st =
               ]
           ]
       , HH.div
-          [ cls ("desk phone-" <> show st.phone <> (if open then " with-bench" else "") <> (if isJust st.drag then " dragging" else ""))
-          , HP.style (sizeStyle st)
+          [ cls ("desk phone-" <> show st.phone <> (if open then " with-bench" else "") <> dragging)
+          , HP.style (Layout.sizeStyle st.sizes)
           , HE.onMouseMove GutterMove
           , HE.onMouseUp \_ -> GutterUp
           , HE.onMouseLeave \_ -> GutterUp
           ]
           ( [ HH.div [ cls "pane machine-pane" ]
                 [ HH.div [ cls "pane-body" ] (machineView st wrong) ]
-            , HH.div [ cls "gutter", HP.title "Drag to resize", HE.onMouseDown (GutterDown 0) ] []
+            , HH.div [ cls "gutter", HP.title "Drag to resize", HE.onMouseDown (GutterDown ControlsEdge) ] []
             , HH.div [ cls "pane controls-pane" ]
                 [ HH.div [ cls "pane-head" ]
                     [ segmented
@@ -312,7 +304,7 @@ render st =
             ]
               <>
                 if open then
-                  [ HH.div [ cls "gutter", HP.title "Drag to resize", HE.onMouseDown (GutterDown 1) ] []
+                  [ HH.div [ cls "gutter", HP.title "Drag to resize", HE.onMouseDown (GutterDown BenchEdge) ] []
                   , HH.div [ cls "pane bench-pane" ]
                       [ HH.div [ cls "pane-head" ]
                           [ segmented

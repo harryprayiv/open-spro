@@ -9,6 +9,10 @@
 -- | was some time ago, and either may never arrive at all.
 module Sim.Link
   ( Event(..)
+  , FaderMode(..)
+  , faderScale
+  , faderWord
+  , nextFaderMode
   , eventLabel
   , Status
   , ShotNow
@@ -24,8 +28,11 @@ module Sim.Link
   , shotEnded
   ) where
 
+import Prelude
+
 import Data.Array.NonEmpty as NEA
 import Data.Maybe (Maybe(..), fromMaybe)
+import Data.String (toLower)
 import Sim.Types (Actuators, ClientKind, Fault, FaultKind, MachineState(..), PowerMode(..), Profile, Sensors, Shot, ShotState(..), idleActuators)
 
 -- | What a client can ask of the machine.
@@ -36,10 +43,54 @@ data Event
   | ShotRequested
   | StepAdvanceRequested
   | ShotStopRequested
+  -- The fader taken in hand and set to this reading on the scale the
+  -- selector has chosen: bar or degrees C.
+  | FaderTaken Number
+  -- The fader given back: the profile carries on.
+  | FaderGiven
+  -- The selector knob turned to this.
+  | FaderModeSelected FaderMode
   | FaultsCleared ClientKind
   | BlowdownConfirmed
   | WaterWarningAcknowledged
   | SensorFailed FaultKind
+
+-- | What the fader's travel stands for. A selector knob on the machine
+-- | chooses it.
+data FaderMode
+  -- The brew pressure. Taken in hand, the profile's steps stand still.
+  = OnPressure
+  -- The temperature of the water to the group. Taken in hand, the
+  -- profile's steps carry on with that water.
+  | OnTemperature
+  -- How far through the shot's time it is. The fader only shows this.
+  | OnTime
+
+derive instance Eq FaderMode
+
+-- | The readings at the bottom and the top of the fader's travel. They
+-- | are fixed in the controller (FADER_FULL_BAR, FADER_LOW_C and
+-- | FADER_HIGH_C in core_types.rs). On time the travel is the whole of
+-- | the shot's time, from 0 to 1.
+faderScale :: FaderMode -> { low :: Number, high :: Number }
+faderScale = case _ of
+  OnPressure -> { low: 0.0, high: 10.0 }
+  OnTemperature -> { low: 80.0, high: 100.0 }
+  OnTime -> { low: 0.0, high: 1.0 }
+
+-- | The word in the selector's window.
+faderWord :: FaderMode -> String
+faderWord = case _ of
+  OnPressure -> "PRESSURE"
+  OnTemperature -> "TEMP"
+  OnTime -> "TIME"
+
+-- | The next click of the selector knob.
+nextFaderMode :: FaderMode -> FaderMode
+nextFaderMode = case _ of
+  OnPressure -> OnTemperature
+  OnTemperature -> OnTime
+  OnTime -> OnPressure
 
 -- | An event in a few words, for telling the barista which request
 -- | went unanswered.
@@ -51,14 +102,19 @@ eventLabel = case _ of
   ShotRequested -> "start shot"
   StepAdvanceRequested -> "next step"
   ShotStopRequested -> "stop"
+  FaderTaken _ -> "the fader"
+  FaderGiven -> "follow the profile"
+  FaderModeSelected mode -> "the selector to " <> toLower (faderWord mode)
   FaultsCleared _ -> "clear faults"
   BlowdownConfirmed -> "confirm blowdown"
   WaterWarningAcknowledged -> "acknowledge water warning"
   SensorFailed _ -> "break a sensor"
 
 -- | The running shot as the controller reports it: its place in the
--- | selected profile and when it and its present step began.
-type ShotNow = { stepIndex :: Int, startedAt :: Number, stepStartedAt :: Number }
+-- | selected profile, when it and its present step began, and the
+-- | pressure or the water temperature held by hand with the fader, if
+-- | either is. At most one of the two is held.
+type ShotNow = { stepIndex :: Int, startedAt :: Number, stepStartedAt :: Number, manual :: Maybe Number, manualC :: Maybe Number }
 
 -- | The last shot to have ended.
 type ShotEnd =
@@ -85,6 +141,10 @@ type Status =
   -- Flow into the group as the controller estimates it. The machine
   -- has no flow meter.
   , flowMlPerS :: Number
+  -- Where the fader is along its travel, from 0 to 1, and what the
+  -- selector says the travel stands for.
+  , fader :: Number
+  , faderMode :: FaderMode
   , heaterWatts :: Int
   , fillsSinceBlowdown :: Int
   , blowdownDue :: Boolean
@@ -110,6 +170,8 @@ restingStatus =
   , flowTargetMlPerS: Nothing
   , paceTrimBar: 0.0
   , flowMlPerS: 0.0
+  , fader: 0.0
+  , faderMode: OnPressure
   , heaterWatts: 0
   , fillsSinceBlowdown: 0
   , blowdownDue: false

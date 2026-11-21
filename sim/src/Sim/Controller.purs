@@ -29,7 +29,7 @@ import Data.Int (round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.Number (isNaN, nan)
 import Sim.Core as Core
-import Sim.Link (Event(..))
+import Sim.Link (Event(..), FaderMode(..))
 import Sim.Link (ShotEnd, Status, shotEnded, shotNow) as Link
 import Sim.Types (Actuators, ClientKind(..), Config, Curve(..), Fault, FaultKind(..), GroupValve(..), MachineState(..), MixValve(..), PowerMode(..), Profile, PumpMode(..), Sensors, Shot, ShotState(..), Step, StepMode(..), Tuning, TwoWay(..))
 
@@ -57,6 +57,14 @@ type Ctl =
   -- The running shot, if there is one, and the controller's newest
   -- faults, oldest first.
   , shot :: Maybe Shot
+  -- The pressure set by hand on the fader, if the shot is in manual
+  -- mode, and where the fader is along its travel.
+  , manual :: Maybe Number
+  , fader :: Number
+  -- The water temperature held by hand, if one is, and what the
+  -- selector says the fader's travel stands for.
+  , manualC :: Maybe Number
+  , faderMode :: FaderMode
   , faults :: Array Fault
   -- What the simulated machine keeps beside the controller, for the
   -- scenarios and the forecast: the profile it last accepted and a log
@@ -81,11 +89,13 @@ status c =
   , flowTargetMlPerS: c.flowTargetMlPerS
   , paceTrimBar: c.paceTrimBar
   , flowMlPerS: c.flowEstimate
+  , fader: c.fader
+  , faderMode: c.faderMode
   , heaterWatts: heaterDrawWatts c.cfg c.act
   , fillsSinceBlowdown: c.fillsSinceBlowdown
   , blowdownDue: c.blowdownDue
   , waterWarning: c.waterWarning
-  , shot: c.shot <#> \shot -> { stepIndex: shot.stepIndex, startedAt: shot.startedAt, stepStartedAt: shot.stepStartedAt }
+  , shot: c.shot <#> \shot -> { stepIndex: shot.stepIndex, startedAt: shot.startedAt, stepStartedAt: shot.stepStartedAt, manual: c.manual, manualC: c.manualC }
   , shotsEnded: c.shotsEnded
   , lastShot: c.lastShot
   , faults: c.faults
@@ -155,6 +165,10 @@ configWire c =
   , c.shotTimeout
   , c.idleSleepAfter
   , toNumber c.blowdownAfterFills
+  , c.manualMinBar
+  , c.manualMaxBar
+  , c.manualMinC
+  , c.manualMaxC
   ]
 
 tuningWire :: Tuning -> Array Number
@@ -245,6 +259,17 @@ eventWire = case _ of
   ShotRequested -> { code: 3.0, carries: [] }
   StepAdvanceRequested -> { code: 4.0, carries: [] }
   ShotStopRequested -> { code: 5.0, carries: [] }
+  FaderTaken bar -> { code: 10.0, carries: [ bar ] }
+  FaderGiven -> { code: 11.0, carries: [] }
+  FaderModeSelected mode ->
+    { code: 12.0
+    , carries:
+        [ case mode of
+            OnPressure -> 0.0
+            OnTemperature -> 1.0
+            OnTime -> 2.0
+        ]
+    }
   FaultsCleared client -> { code: 6.0, carries: [ clientWire client ] }
   BlowdownConfirmed -> { code: 7.0, carries: [] }
   WaterWarningAcknowledged -> { code: 8.0, carries: [] }
@@ -257,7 +282,7 @@ eventWire = case _ of
 -- | The fixed part of a status is this long, and each fault after it
 -- | takes three numbers.
 statusHead :: Int
-statusHead = 34
+statusHead = 38
 
 -- | Read the core's reply into the record. The numbers are in the order
 -- | `write_status` puts them in.
@@ -270,8 +295,10 @@ absorb reply c =
     pick :: forall a. a -> Array a -> Int -> a
     pick fallback choices i = fromMaybe fallback (index choices (round (at i)))
     shot =
-      if on 21 then Just (Link.shotNow c.selected { stepIndex: round (at 22), startedAt: at 23, stepStartedAt: at 24 })
+      if on 21 then Just (Link.shotNow c.selected { stepIndex: round (at 22), startedAt: at 23, stepStartedAt: at 24, manual, manualC })
       else Nothing
+    manual = if on 21 then present 34 else Nothing
+    manualC = if on 21 then present 37 else Nothing
     ended = round (at 25)
     lastShot =
       if ended == 0 then Nothing
@@ -324,6 +351,10 @@ absorb reply c =
       , blowdownDue = on 19
       , waterWarning = on 20
       , shot = shot
+      , manual = manual
+      , fader = at 35
+      , manualC = manualC
+      , faderMode = pick OnPressure [ OnPressure, OnTemperature, OnTime ] 36
       , history = history
       , shotsEnded = ended
       , lastShot = lastShot
@@ -366,6 +397,10 @@ initialCtl cfg tune profile =
     , blowdownDue: false
     , waterWarning: false
     , shot: Nothing
+    , manual: Nothing
+    , fader: 0.0
+    , manualC: Nothing
+    , faderMode: OnPressure
     , faults: []
     , selected: profile
     , history: []

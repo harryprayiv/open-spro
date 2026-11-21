@@ -18,7 +18,7 @@ import Prelude
 import Data.Maybe (Maybe(..), isJust)
 import Data.Array (filter)
 import Sim.Controller (heaterDrawWatts)
-import Sim.Link (Status)
+import Sim.Link (FaderMode(..), Status)
 import Sim.Types (Config, GroupValve(..), MachineState(..), MixValve(..), PowerMode(..), PumpMode(..), Sensors, TwoWay(..))
 
 type Check = { name :: String, holds :: Boolean }
@@ -75,6 +75,23 @@ checks cfg s c =
       }
     , { name: "NoFillDuringShot"
       , holds: inShot `implies` (a.fillValve == Closed)
+      }
+    , { name: "OneHoldAtATime"
+      , holds: case c.shot of
+          Just shot -> not (isJust shot.manual && isJust shot.manualC)
+          Nothing -> true
+      }
+    , { name: "HoldMatchesSelector"
+      , holds: case c.shot of
+          Just shot ->
+            (isJust shot.manual `implies` (c.faderMode == OnPressure))
+              && (isJust shot.manualC `implies` (c.faderMode == OnTemperature))
+          Nothing -> true
+      }
+    , { name: "HeldWaterUnderLimit"
+      , holds: case c.shot >>= _.manualC of
+          Just celsius -> celsius <= cfg.mixLimitC - 1.0 + 10.0 * rounding
+          Nothing -> true
       }
     ]
 

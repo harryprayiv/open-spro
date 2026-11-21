@@ -1,9 +1,11 @@
--- | The machine seen from the front: two dial gauges, three temperature
--- | displays, heater lamps, the paddle, the group with its portafilter,
--- | the cup on the scale and the steam wand. Brushed aluminium, brass,
--- | wood and concrete come from the images in sim/imgs/textures; every
--- | textured shape has a flat colour beneath it in case an image is
--- | missing.
+-- | The machine seen from the front, drawn plainly: a brushed steel
+-- | face under a band of charred cedar, one dial for both pressures, a
+-- | window for the value the fader is at, three small temperature
+-- | readouts, heater lamps, the fader with its selector drum, the group
+-- | with its portafilter in front of a concrete backsplash, the cup on
+-- | the scale and the steam wand on its turret. Steel, cedar, wood and
+-- | concrete come from the images in sim/imgs/textures; every textured
+-- | shape has a flat colour beneath it in case an image is missing.
 module Sim.View.Front
   ( FrontInput
   , front
@@ -14,9 +16,15 @@ import Prelude
 import Data.Array (range)
 import Data.Int (toNumber)
 import Data.Number (cos, floor, pi, sin)
+import Data.String (toLower)
 import Halogen.HTML as HH
+import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
+import Halogen.HTML.Events as HE
+import Halogen.HTML.Properties as HP
+import Sim.Link (Event(..), FaderMode(..), faderWord, nextFaderMode)
+import Sim.Model (Action(..))
 import Sim.Types (MachineState(..))
-import Sim.View.Svg (Attr, at, circle, defs, g, label, line, num, path, rect, sheen, svg, texture)
+import Sim.View.Svg (Attr, at, circle, defs, fitted, g, label, line, num, path, rect, svg, texture)
 
 type FrontInput =
   { now :: Number
@@ -33,8 +41,15 @@ type FrontInput =
   , groupHeaterOn :: Boolean
   , pouring :: Boolean
   , steaming :: Boolean
-  -- 0 is off, 1 is pre-brew, 2 is brew.
-  , paddle :: Int
+  -- Where the fader is along its travel, from 0 to 1, whether a shot
+  -- is running and whether it is being pulled by hand.
+  , fader :: Number
+  -- What the selector says the fader's travel stands for.
+  , mode :: FaderMode
+  -- The value the fader is at, written out with its unit.
+  , faderValue :: String
+  , running :: Boolean
+  , manual :: Boolean
   -- Something on the page's problem list is active.
   , problem :: Boolean
   , flowMlPerS :: Number
@@ -45,14 +60,28 @@ type FrontInput =
 bad :: String
 bad = "#d32f2f"
 
-steel :: String
-steel = "#d9dcdf"
+-- | The palette of the front: black lettering on steel, off-white
+-- | figures in black windows, and one orange for whatever is live.
+ink :: String
+ink = "#1c1d1f"
 
-steelDark :: String
-steelDark = "#8b9197"
+quiet :: String
+quiet = "#4a4e52"
 
-panel :: String
-panel = "#1f1b19"
+steelEdge :: String
+steelEdge = "#6f757b"
+
+paper :: String
+paper = "#f4f2ec"
+
+window :: String
+window = "#141516"
+
+orange :: String
+orange = "#e2572b"
+
+sans :: String
+sans = "'Helvetica Neue', Helvetica, Arial, sans-serif"
 
 textures :: String
 textures = "../imgs/textures/"
@@ -64,6 +93,13 @@ faced name fallback attrs =
   , rect (attrs <> [ at "fill" ("url(#" <> name <> ")") ])
   ]
 
+-- | Brushed steel: the texture with a wash of white over it, so black
+-- | lettering reads on it.
+steel :: forall w i. Array Attr -> Array (HH.HTML w i)
+steel attrs =
+  faced "alu" "#b9bec4" attrs
+    <> [ rect (attrs <> [ at "fill" "#ffffff", at "opacity" "0.42" ]) ]
+
 -- | A point on a dial. Zero degrees is straight up, positive is clockwise.
 onDial :: Number -> Number -> Number -> Number -> { x :: Number, y :: Number }
 onDial cx cy radius degrees =
@@ -72,105 +108,196 @@ onDial cx cy radius degrees =
   in
     { x: cx + radius * sin a, y: cy - radius * cos a }
 
--- | A dial gauge. The scale from `redFrom` up is banded in red, and the
--- | needle hub turns red while the reading is inside the band.
-gauge :: forall w i. Number -> Number -> String -> Int -> Int -> Number -> Number -> HH.HTML w i
-gauge cx cy title maxValue labelEvery redFrom value =
+-- | One dial for both pressures: a white face in a thin black ring,
+-- | hairline marks and plain numerals. The outer scale and the long
+-- | black hand are the brew pressure. The inner scale and the short
+-- | orange hand are the steam pressure. Each scale has a red arc from
+-- | its `redFrom` up.
+type Scale = { most :: Int, labelEvery :: Int, redFrom :: Number, value :: Number }
+
+dualGauge :: forall w i. Number -> Number -> Scale -> Scale -> HH.HTML w i
+dualGauge cx cy brew steam =
   let
-    r = 52.0
-    sweep v = -135.0 + 270.0 * clamp 0.0 1.0 (v / toNumber maxValue)
-    bandStart = onDial cx cy (r - 3.0) (sweep redFrom)
-    bandEnd = onDial cx cy (r - 3.0) (sweep (toNumber maxValue))
-    band =
-      "M" <> num bandStart.x <> "," <> num bandStart.y
-        <> " A" <> num (r - 3.0) <> "," <> num (r - 3.0) <> " 0 0 1 "
-        <> num bandEnd.x <> "," <> num bandEnd.y
-    tick n =
+    r = 58.0
+    sweep scale v = -135.0 + 270.0 * clamp 0.0 1.0 (v / toNumber scale.most)
+    arc radius scale =
       let
-        major = n `mod` labelEvery == 0
-        outer = onDial cx cy (r - 5.0) (sweep (toNumber n))
-        inner = onDial cx cy (r - (if major then 15.0 else 10.0)) (sweep (toNumber n))
+        from = onDial cx cy radius (sweep scale scale.redFrom)
+        to = onDial cx cy radius (sweep scale (toNumber scale.most))
+      in
+        "M" <> num from.x <> "," <> num from.y
+          <> " A" <> num radius <> "," <> num radius <> " 0 0 1 "
+          <> num to.x <> "," <> num to.y
+    mark colour from long short scale parts n =
+      let
+        whole = n `mod` parts == 0
+        angle = sweep scale (toNumber n / toNumber parts)
+        outer = onDial cx cy from angle
+        inner = onDial cx cy (from - (if whole then long else short)) angle
       in
         line
           [ at "x1" (num outer.x), at "y1" (num outer.y)
           , at "x2" (num inner.x), at "y2" (num inner.y)
-          , at "stroke" "#1d1d1b", at "stroke-width" (if major then "2" else "1")
+          , at "stroke" colour, at "stroke-width" (if whole then "1.3" else "0.6")
           ]
-    number n =
+    numeral colour radius size scale n =
       let
-        p = onDial cx cy (r - 23.0) (sweep (toNumber n))
+        p = onDial cx cy radius (sweep scale (toNumber n))
       in
         label
-          [ at "x" (num p.x), at "y" (num (p.y + 3.5))
-          , at "text-anchor" "middle", at "font-size" "10", at "fill" "#1d1d1b"
+          [ at "x" (num p.x), at "y" (num (p.y + size * 0.36))
+          , at "text-anchor" "middle", at "font-size" (num size), at "font-family" sans, at "fill" colour
           ]
           (show n)
-    marks = range 0 maxValue
-    labelled = map (_ * labelEvery) (range 0 (maxValue / labelEvery))
-    tip = onDial cx cy (r - 12.0) (sweep value)
+    labelled scale = map (_ * scale.labelEvery) (range 0 (scale.most / scale.labelEvery))
+    hand scale reach width colour =
+      let
+        angle = sweep scale scale.value
+        tip = onDial cx cy reach angle
+        tail = onDial cx cy 9.0 (angle + 180.0)
+      in
+        line
+          [ at "x1" (num tail.x), at "y1" (num tail.y), at "x2" (num tip.x), at "y2" (num tip.y)
+          , at "stroke" colour, at "stroke-width" width, at "stroke-linecap" "round"
+          ]
+    word y colour text =
+      label
+        [ at "x" (num cx), at "y" (num (cy + y))
+        , at "text-anchor" "middle", at "font-size" "5.5", at "font-family" sans
+        , at "letter-spacing" "0.6", at "fill" colour
+        ]
+        text
   in
     g []
-      ( [ circle [ at "cx" (num cx), at "cy" (num cy), at "r" (num (r + 5.0)), at "fill" "#b08d57" ]
-        , circle [ at "cx" (num cx), at "cy" (num cy), at "r" (num (r + 5.0)), at "fill" "url(#brass)", at "stroke" "#5c4520", at "stroke-width" "1" ]
-        , circle [ at "cx" (num cx), at "cy" (num cy), at "r" (num r), at "fill" "#f7f3e8", at "stroke" "#3a2c14", at "stroke-width" "1" ]
-        , path [ at "d" band, at "fill" "none", at "stroke" bad, at "stroke-width" "5" ]
+      ( [ circle [ at "cx" (num cx), at "cy" (num cy), at "r" (num (r + 3.0)), at "fill" ink ]
+        , circle [ at "cx" (num cx), at "cy" (num cy), at "r" (num r), at "fill" paper ]
+        , path [ at "d" (arc (r - 4.5) brew), at "fill" "none", at "stroke" bad, at "stroke-width" "2" ]
+        , path [ at "d" (arc (r - 31.5) steam), at "fill" "none", at "stroke" bad, at "stroke-width" "1.5" ]
         ]
-          <> map tick marks
-          <> map number labelled
+          <> map (mark ink (r - 6.0) 7.0 3.5 brew 2) (range 0 (brew.most * 2))
+          <> map (numeral ink (r - 20.0) 8.5 brew) (labelled brew)
+          <> map (mark orange (r - 33.0) 4.0 2.0 steam 2) (range 0 (steam.most * 2))
+          <> map (numeral orange (r - 43.5) 6.5 steam) (labelled steam)
           <>
-            [ label
-                [ at "x" (num cx), at "y" (num (cy + 42.0))
-                , at "text-anchor" "middle", at "font-size" "8", at "fill" "#55534c"
-                ]
-                title
-            , line
-                [ at "x1" (num cx), at "y1" (num cy), at "x2" (num tip.x), at "y2" (num tip.y)
-                , at "stroke" "#b3261e", at "stroke-width" "2.5", at "stroke-linecap" "round"
-                ]
-            , circle [ at "cx" (num cx), at "cy" (num cy), at "r" "5", at "fill" (if value >= redFrom then bad else "#1d1d1b") ]
+            [ word 49.0 quiet "brew  bar"
+            , word 30.0 orange "steam"
+            , hand steam (r - 34.0) "1.6" orange
+            , hand brew (r - 8.0) "2" ink
+            , circle [ at "cx" (num cx), at "cy" (num cy), at "r" "3.4", at "fill" ink ]
             ]
       )
 
+-- | A lamp: a small dot that is lit or not, with its name under it.
 lamp :: forall w i. Number -> Number -> String -> Boolean -> String -> HH.HTML w i
 lamp x y title lit colour =
   g []
     [ circle
-        [ at "cx" (num x), at "cy" (num y), at "r" "5"
-        , at "fill" (if lit then colour else "#4a4d52")
-        , at "stroke" "#b08d57", at "stroke-width" "1.5"
+        [ at "cx" (num x), at "cy" (num y), at "r" "3.6"
+        , at "fill" (if lit then colour else "#8d9297")
+        , at "stroke" ink, at "stroke-width" "0.6"
         ]
     , label
-        [ at "x" (num x), at "y" (num (y + 15.0)), at "text-anchor" "middle"
-        , at "font-size" "7", at "letter-spacing" "0.8", at "fill" "#c9b99a"
+        [ at "x" (num x), at "y" (num (y + 12.0)), at "text-anchor" "middle"
+        , at "font-size" "5.5", at "font-family" sans, at "letter-spacing" "0.3", at "fill" quiet
         ]
         title
     ]
 
-display :: forall w i. Number -> String -> String -> HH.HTML w i
-display x title value =
+-- | A small figure in a black window, its name to the left of it.
+readout :: forall w i. Number -> String -> String -> HH.HTML w i
+readout y title value =
   g []
-    [ label [ at "x" (num (x + 42.0)), at "y" "196", at "text-anchor" "middle", at "font-size" "8", at "letter-spacing" "0.6", at "fill" "#3a3d42" ] title
-    , rect [ at "x" (num x), at "y" "200", at "width" "84", at "height" "26", at "rx" "4", at "fill" "#0f1a14", at "stroke" "#5c4520", at "stroke-width" "1" ]
+    [ label
+        [ at "x" "301", at "y" (num (y + 11.5)), at "text-anchor" "end", at "font-size" "5.5"
+        , at "font-family" sans, at "letter-spacing" "0.3", at "fill" quiet
+        ]
+        title
+    , rect [ at "x" "306", at "y" (num y), at "width" "48", at "height" "17", at "rx" "2", at "fill" window ]
     , label
-        [ at "x" (num (x + 42.0)), at "y" "219", at "text-anchor" "middle"
-        , at "font-size" "16", at "font-family" "monospace", at "fill" "#7dffa8"
+        [ at "x" "330", at "y" (num (y + 12.5)), at "text-anchor" "middle"
+        , at "font-size" "10.5", at "font-family" "monospace", at "fill" paper
         ]
         value
     ]
 
+-- | The window in the middle: what the fader stands for, and the value
+-- | it is at. On time, where the fader cannot be moved, the word is
+-- | red.
+faderWindow :: forall w i. FaderMode -> String -> HH.HTML w i
+faderWindow mode value =
+  g []
+    [ rect [ at "x" "192", at "y" "96", at "width" "76", at "height" "46", at "rx" "3", at "fill" window ]
+    , label
+        [ at "x" "200", at "y" "109", at "font-size" "6", at "font-family" sans
+        , at "letter-spacing" "0.5", at "fill" (if mode == OnTime then "#ff4d3d" else "#9aa0a6")
+        ]
+        (toLower (faderWord mode))
+    , label
+        [ at "x" "261", at "y" "133", at "text-anchor" "end"
+        , at "font-size" "15", at "font-family" "monospace", at "fill" paper
+        ]
+        value
+    ]
+
+-- | The selector: a drum with the three words written round it, turned
+-- | by the knurled wheel that stands out of the left flank. The window
+-- | beside the wheel faces the front and shows the word the drum is
+-- | on, with the edges of its neighbours above and below. On time,
+-- | where the fader cannot be moved, the word is red.
+selector :: forall w. FaderMode -> HH.HTML w Action
+selector mode =
+  let
+    next = nextFaderMode mode
+    before = nextFaderMode next
+    groove i =
+      let
+        gy = 203.5 + 3.5 * toNumber i
+      in
+        line [ at "x1" "9", at "x2" "29", at "y1" (num gy), at "y2" (num gy), at "stroke" steelEdge, at "stroke-width" "0.8" ]
+    neighbour y text =
+      label
+        [ at "x" "68", at "y" y, at "text-anchor" "middle", at "font-size" "5", at "font-family" sans
+        , at "letter-spacing" "0.5", at "fill" "#6c7176"
+        ]
+        (toLower (faderWord text))
+  in
+    g []
+      ( [ rect [ at "x" "8", at "y" "200", at "width" "22", at "height" "28", at "rx" "2.5", at "fill" "#c5cace", at "stroke" steelEdge, at "stroke-width" "0.8" ]
+        , g [] (map groove (range 0 6))
+        , rect [ at "x" "40", at "y" "200", at "width" "56", at "height" "28", at "rx" "2", at "fill" window ]
+        , neighbour "206.5" before
+        , label
+            [ at "x" "68", at "y" "217", at "text-anchor" "middle", at "font-size" "8", at "font-family" sans
+            , at "letter-spacing" "0.6", at "fill" (if mode == OnTime then "#ff4d3d" else paper)
+            ]
+            (toLower (faderWord mode))
+        , neighbour "226" next
+        , HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "rect")
+            [ HP.attr (AttrName "x") "4", HP.attr (AttrName "y") "196"
+            , HP.attr (AttrName "width") "96", HP.attr (AttrName "height") "36"
+            , HP.attr (AttrName "fill") "transparent"
+            , HP.attr (AttrName "class") "fader-press"
+            , HE.onClick \_ -> Send (FaderModeSelected next)
+            ]
+            [ HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "title") []
+                [ HH.text ("The selector: the fader is on " <> toLower (faderWord mode) <> ". Click to turn it to " <> toLower (faderWord next) <> ".") ]
+            ]
+        ]
+      )
+
 stateText :: MachineState -> String
 stateText = case _ of
-  Sleeping -> "ASLEEP"
-  Heating -> "HEATING"
-  Ready -> "READY"
-  Faulted -> "FAULT"
+  Sleeping -> "asleep"
+  Heating -> "heating"
+  Ready -> "ready"
+  Faulted -> "fault"
 
 stateColour :: MachineState -> String
 stateColour = case _ of
-  Sleeping -> "#6b7076"
-  Heating -> "#f2a33a"
-  Ready -> "#4fd37c"
-  Faulted -> "#ff5a4d"
+  Sleeping -> "#8d9297"
+  Heating -> "#e2572b"
+  Ready -> "#2f9e5b"
+  Faulted -> "#d32f2f"
 
 faulted :: MachineState -> Boolean
 faulted = case _ of
@@ -180,15 +307,31 @@ faulted = case _ of
 fill :: String -> Attr
 fill = at "fill"
 
-front :: forall w i. FrontInput -> HH.HTML w i
+front :: forall w. FrontInput -> HH.HTML w Action
 front v =
   let
     phase = v.now * 2.0 - floor (v.now * 2.0)
-    paddleAngle = case v.paddle of
-      0 -> -60.0
-      1 -> 0.0
-      _ -> 60.0
-    knob = onDial 200.0 262.0 22.0 paddleAngle
+    -- where the middle of the fader's cap sits over the slot
+    capX = 60.5 + 279.0 * clamp 0.0 1.0 v.fader
+    -- the scale under the slot: eleven marks, with the reading the
+    -- selector has chosen written at the ends and the middle
+    reading i = case v.mode, i of
+      OnPressure, _ -> show i
+      OnTemperature, _ -> show (80 + 2 * i)
+      OnTime, 0 -> "start"
+      OnTime, 5 -> "half"
+      OnTime, _ -> "end"
+    mark i =
+      let
+        mx = 60.5 + 27.9 * toNumber i
+      in
+        g []
+          ( [ line [ at "x1" (num mx), at "x2" (num mx), at "y1" "255", at "y2" (if i `mod` 5 == 0 then "260" else "258"), at "stroke" "#b9bec4", at "stroke-width" "0.8" ] ]
+              <>
+                if i `mod` 5 == 0 then
+                  [ label [ at "x" (num mx), at "y" "243", at "text-anchor" "middle", at "font-size" "6", at "font-family" sans, at "letter-spacing" "0.4", fill "#b9bec4" ] (reading i) ]
+                else []
+          )
     fraction = clamp 0.0 1.0 (v.cupGrams / max 1.0 v.targetGrams)
     top = 392.0 - 36.0 * fraction
     -- stream: half its width, how far it spreads across the basket and
@@ -206,8 +349,8 @@ front v =
         drop = (toNumber n + phase) * 9.0
       in
         circle
-          [ at "cx" (num (384.0 + (if n `mod` 2 == 0 then -3.0 else 3.0)))
-          , at "cy" (num (378.0 + drop))
+          [ at "cx" (num (368.5 + (if n `mod` 2 == 0 then -3.0 else 3.0)))
+          , at "cy" (num (366.0 + drop))
           , at "r" (num (3.0 + drop / 5.0))
           , fill "#ffffff"
           , at "stroke" "#b9bec4"
@@ -217,78 +360,122 @@ front v =
   in
     svg [ at "viewBox" "0 0 400 444", at "class" "machine" ]
       ( [ defs
-            [ texture "alu" (textures <> "bushedAlum.png") 180.0
-            , texture "brass" (textures <> "brushedBrass.png") 140.0
+            [ fitted "sugi" (textures <> "sugsugiBan.png") 30.0 26.0 340.0 250.0
+            , fitted "wall" (textures <> "brutalistWall.png") 88.0 276.0 224.0 124.0
+            , fitted "alu" (textures <> "bushedAlum.png") 30.0 26.0 340.0 250.0
             , texture "wood" (textures <> "woodPanel01.png") 160.0
             , texture "stone" (textures <> "brutalistTexture.png") 200.0
-            , sheen "sheen"
             ]
         ]
-          -- counter, cup rail and body
+          -- the counter
           <> faced "stone" "#8b8a86" [ at "x" "0", at "y" "426", at "width" "400", at "height" "18", at "rx" "3" ]
-          <> faced "wood" "#7a4b2a" [ at "x" "40", at "y" "14", at "width" "320", at "height" "12", at "rx" "6" ]
-          <> faced "alu" steel [ at "x" "30", at "y" "26", at "width" "340", at "height" "250", at "rx" "16" ]
+          -- the steam turret: a steel barrel standing out of the right
+          -- flank, with the steam valve's cedar knob on top
           <>
-            [ rect [ at "x" "30", at "y" "26", at "width" "340", at "height" "250", at "rx" "16", fill "url(#sheen)" ]
+            [ rect [ at "x" "364", at "y" "152", at "width" "28", at "height" "42", at "rx" "3", fill "#c5cace", at "stroke" steelEdge, at "stroke-width" "0.8" ]
+            , rect [ at "x" "376", at "y" "142", at "width" "6", at "height" "10", fill "#c5cace", at "stroke" steelEdge, at "stroke-width" "0.6" ]
+            , rect [ at "x" "369", at "y" "130", at "width" "20", at "height" "13", at "rx" "2", fill "#1a110c" ]
+            , rect [ at "x" "369", at "y" "130", at "width" "20", at "height" "13", at "rx" "2", fill "url(#wood)", at "opacity" "0.55" ]
+            ]
+          -- the body: a band of charred cedar across the top and a
+          -- face of brushed steel under it
+          <> faced "sugi" "#1a110c" [ at "x" "30", at "y" "26", at "width" "340", at "height" "250", at "rx" "8" ]
+          <> steel [ at "x" "30", at "y" "52", at "width" "340", at "height" "224", at "rx" "8" ]
+          <> steel [ at "x" "30", at "y" "52", at "width" "340", at "height" "12" ]
+          <>
+            [ line [ at "x1" "30", at "x2" "370", at "y1" "52", at "y2" "52", at "stroke" ink, at "stroke-width" "0.8" ]
             , rect
-                [ at "x" "30", at "y" "26", at "width" "340", at "height" "250", at "rx" "16", fill "none"
-                , at "stroke" (if faulted v.state then bad else steelDark)
-                , at "stroke-width" (if faulted v.state then "5" else "1.5")
+                [ at "x" "30", at "y" "26", at "width" "340", at "height" "250", at "rx" "8", fill "none"
+                , at "stroke" (if faulted v.state then bad else "#55595d")
+                , at "stroke-width" (if faulted v.state then "5" else "1")
                 ]
-            , rect [ at "x" "45", at "y" "40", at "width" "310", at "height" "148", at "rx" "12", fill panel, at "stroke" "#0c0a09", at "stroke-width" "2" ]
-            , gauge 118.0 112.0 "BREW bar" 12 2 11.0 v.brewBar
-            , gauge 282.0 112.0 "STEAM bar" 3 1 2.3 v.steamBar
-            -- state and lamps
+            , dualGauge 104.0 128.0
+                { most: 12, labelEvery: 2, redFrom: 11.0, value: v.brewBar }
+                { most: 3, labelEvery: 1, redFrom: 2.3, value: v.steamBar }
+            -- the machine's state: a dot and a word
+            , circle [ at "cx" "196", at "cy" "79", at "r" "3", fill (stateColour v.state) ]
             , label
-                [ at "x" "200", at "y" "66", at "text-anchor" "middle", at "font-size" "11"
-                , at "font-weight" "700", at "letter-spacing" "1.5", fill (stateColour v.state)
+                [ at "x" "204", at "y" "81.5", at "font-size" "7.5", at "font-family" sans
+                , at "letter-spacing" "0.5", fill ink
                 ]
                 (stateText v.state)
-            , lamp 200.0 84.0 "RESERVOIR" v.brewElementOn "#ff9a3d"
-            , lamp 200.0 110.0 "STEAM" v.steamElementOn "#ff9a3d"
-            , lamp 200.0 136.0 "GROUP" v.groupHeaterOn "#ff9a3d"
-            , lamp 200.0 162.0 "PROBLEM" v.problem "#ff2d1f"
-            -- temperature displays
-            , display 48.0 "RESERVOIR C" (num v.reservoirC)
-            , display 158.0 "GROUP C" (num v.groupC)
-            , display 268.0 "WATER C" (num v.waterC)
-            -- paddle: a wooden lever on a brass hub
-            , line
-                [ at "x1" "200", at "y1" "262", at "x2" (num knob.x), at "y2" (num knob.y)
-                , at "stroke" "#7a4b2a", at "stroke-width" "8", at "stroke-linecap" "round"
+            , faderWindow v.mode v.faderValue
+            -- the three temperatures, one over the other
+            , readout 96.0 "reservoir" (num v.reservoirC)
+            , readout 119.0 "group" (num v.groupC)
+            , readout 142.0 "water" (num v.waterC)
+            -- the lamps, in a row
+            , lamp 200.0 172.0 "reservoir" v.brewElementOn orange
+            , lamp 240.0 172.0 "steam" v.steamElementOn orange
+            , lamp 280.0 172.0 "group" v.groupHeaterOn orange
+            , lamp 330.0 172.0 "problem" v.problem bad
+            -- the fader: a black strip across the front with a slot in
+            -- it and a scale. The cap is the slider laid over this
+            -- drawing by the page, so it can be taken in hand.
+            , rect [ at "x" "46", at "y" "234", at "width" "308", at "height" "30", at "rx" "3", fill window ]
+            , rect [ at "x" "56", at "y" "245", at "width" "288", at "height" "8", at "rx" "4", fill "#000000", at "stroke" "#3a3d40", at "stroke-width" "0.8" ]
+            , rect
+                [ at "x" "58", at "y" "247.5", at "width" (num (max 0.0 (capX - 58.0))), at "height" "3", at "rx" "1.5"
+                , fill (if v.manual then orange else if v.running then paper else "#3a3d40")
                 ]
-            , circle [ at "cx" (num knob.x), at "cy" (num knob.y), at "r" "8", fill "#5b3620", at "stroke" "#2e1a0d", at "stroke-width" "1" ]
-            , circle [ at "cx" "200", at "cy" "262", at "r" "7", fill "#b08d57" ]
-            , circle [ at "cx" "200", at "cy" "262", at "r" "7", fill "url(#brass)", at "stroke" "#5c4520", at "stroke-width" "1" ]
+            , g [] (map mark (range 0 10))
+            , selector v.mode
             ]
+          -- The backsplash: board-marked concrete between two steel
+          -- posts, so the stream and the cup are seen against something
+          -- light.
+          <> faced "wall" "#bcbcbe" [ at "x" "88", at "y" "276", at "width" "224", at "height" "124" ]
+          <> [ rect [ at "x" "88", at "y" "276", at "width" "224", at "height" "8", fill "#000000", at "opacity" "0.2" ] ]
+          <> steel [ at "x" "84", at "y" "276", at "width" "5", at "height" "124" ]
+          <> steel [ at "x" "311", at "y" "276", at "width" "5", at "height" "124" ]
           -- group and portafilter
-          <> faced "alu" "#b9bec4" [ at "x" "150", at "y" "276", at "width" "100", at "height" "22", at "rx" "4" ]
-          -- the portafilter: a long wooden handle, a wide ring and the
-          -- underside of a bottomless basket
-          <> faced "wood" "#3a2415" [ at "x" "52", at "y" "311", at "width" "96", at "height" "16", at "rx" "8" ]
+          <> steel [ at "x" "150", at "y" "276", at "width" "100", at "height" "22", at "rx" "2" ]
           <>
-            [ rect [ at "x" "142", at "y" "298", at "width" "116", at "height" "13", fill steelDark ]
-            , rect [ at "x" "138", at "y" "311", at "width" "124", at "height" "17", at "rx" "4", fill "#3a3d42" ]
-            , path [ at "d" "M148,328 L252,328 Q250,337 240,338 L160,338 Q150,337 148,328 Z", fill "#c9ced3", at "stroke" "#6f757b", at "stroke-width" "1" ]
-            -- steam wand: out of the side of the body on a ball joint,
-            -- then down beside the drip tray
-            , path
-                [ at "d" "M336,236 L368,236 Q384,236 384,252 L384,366", fill "none"
-                , at "stroke" "#c9ced3", at "stroke-width" "7", at "stroke-linecap" "round"
+            -- The button on the group: it starts the profile, and stops
+            -- a shot that is running.
+            [ rect [ at "x" "150", at "y" "276", at "width" "100", at "height" "22", at "rx" "2", fill "none", at "stroke" steelEdge, at "stroke-width" "0.8" ]
+            , circle [ at "cx" "200", at "cy" "287", at "r" "7.5", fill ink ]
+            , circle [ at "cx" "200", at "cy" "287", at "r" "3.2", fill (if v.running then orange else "#2f9e5b") ]
+            , HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "circle")
+                [ HP.attr (AttrName "cx") "200", HP.attr (AttrName "cy") "287", HP.attr (AttrName "r") "13"
+                , HP.attr (AttrName "fill") "transparent"
+                , HP.attr (AttrName "class") "fader-press"
+                , HE.onClick \_ -> Send (if v.running then ShotStopRequested else ShotRequested)
                 ]
-            , circle [ at "cx" "338", at "cy" "236", at "r" "9", fill "#b08d57", at "stroke" "#5c4520", at "stroke-width" "1" ]
-            , rect [ at "x" "379", at "y" "362", at "width" "10", at "height" "12", at "rx" "3", fill "#8b9197" ]
+                [ HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "title") [] [ HH.text (if v.running then "Stop the shot" else "Run the profile") ] ]
+            ]
+          -- the portafilter: a long cedar handle, a wide ring and the
+          -- underside of a bottomless basket
+          <> faced "wood" "#1a110c" [ at "x" "52", at "y" "312", at "width" "96", at "height" "14", at "rx" "7" ]
+          <> [ rect [ at "x" "52", at "y" "312", at "width" "96", at "height" "14", at "rx" "7", fill "#120c08", at "opacity" "0.55" ] ]
+          <> steel [ at "x" "142", at "y" "298", at "width" "116", at "height" "13" ]
+          <>
+            [ rect [ at "x" "138", at "y" "311", at "width" "124", at "height" "17", at "rx" "2", fill ink ]
+            , path [ at "d" "M148,328 L252,328 Q250,337 240,338 L160,338 Q150,337 148,328 Z", fill "#c9ced3", at "stroke" steelEdge, at "stroke-width" "1" ]
+            -- the steam wand: out of the foot of the turret on a ball
+            -- joint, swung forward and a little inward
+            , circle [ at "cx" "378", at "cy" "199", at "r" "8", fill "#c9ced3", at "stroke" steelEdge, at "stroke-width" "1" ]
+            , path
+                [ at "d" "M378,204 C377,250 372,300 369,348", fill "none"
+                , at "stroke" "#8b9197", at "stroke-width" "7", at "stroke-linecap" "round"
+                ]
+            , path
+                [ at "d" "M378,204 C377,250 372,300 369,348", fill "none"
+                , at "stroke" "#e3e6e9", at "stroke-width" "4.6", at "stroke-linecap" "round"
+                ]
+            , path [ at "d" "M365,346 L373,347 L372,358 L365.5,357 Z", fill ink ]
             ]
           -- drip tray, scale platform, cup
-          <> faced "alu" steelDark [ at "x" "80", at "y" "400", at "width" "240", at "height" "26", at "rx" "4" ]
+          <> steel [ at "x" "80", at "y" "400", at "width" "240", at "height" "26", at "rx" "2" ]
           <>
-            [ rect [ at "x" "150", at "y" "394", at "width" "100", at "height" "6", fill "#c7ccd1" ]
+            [ rect [ at "x" "80", at "y" "400", at "width" "240", at "height" "26", at "rx" "2", fill "none", at "stroke" steelEdge, at "stroke-width" "0.8" ]
+            , rect [ at "x" "150", at "y" "394", at "width" "100", at "height" "6", fill "#c5cace", at "stroke" steelEdge, at "stroke-width" "0.6" ]
             , path [ at "d" "M172,352 L228,352 L222,394 L178,394 Z", fill "#f4f1ea", at "stroke" "#8a8378", at "stroke-width" "1.5" ]
             , path [ at "d" coffee, fill "#5a3a22" ]
-            , rect [ at "x" "170", at "y" "404", at "width" "60", at "height" "16", at "rx" "3", fill "#0f1a14" ]
+            , rect [ at "x" "170", at "y" "404", at "width" "60", at "height" "16", at "rx" "2", fill window ]
             , label
                 [ at "x" "200", at "y" "416", at "text-anchor" "middle", at "font-size" "11"
-                , at "font-family" "monospace", fill "#7dffa8"
+                , at "font-family" "monospace", fill paper
                 ]
                 (num v.cupGrams <> " g")
             ]

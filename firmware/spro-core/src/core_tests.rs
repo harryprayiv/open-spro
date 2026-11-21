@@ -33,6 +33,10 @@ fn config() -> Config {
         shot_timeout_s: 120.0,
         idle_sleep_after_s: 2700.0,
         blowdown_after_fills: 200,
+        manual_min_bar: 1.0,
+        manual_max_bar: 9.5,
+        manual_min_c: 85.0,
+        manual_max_c: 97.0,
     }
 }
 
@@ -263,6 +267,214 @@ fn a_line_prebrew_step_opens_the_bypass_and_stops_the_pump() {
     assert_eq!(c.shot.unwrap().step_index, 1);
     assert_eq!(c.act.bypass_valve, TwoWay::Closed);
     assert_eq!(c.act.pump, PumpMode::PressureControl);
+}
+
+#[test]
+fn the_fader_taken_in_hand_sets_the_pressure_within_the_manual_limits() {
+    let mut c = ready();
+    let mut s = warm();
+    assert_eq!(c.handle(900, &s, Event::FaderTaken(6.0)), Err(Reject::NoShotRunning));
+    assert_eq!(c.handle(900, &s, Event::FaderGiven), Err(Reject::NoShotRunning));
+    c.handle(1000, &s, Event::ShotRequested).unwrap();
+    assert_eq!(c.act.pump, PumpMode::FlowControl);
+
+    // Taken during the wetting step: the pump goes to pressure and the
+    // setpoint is the fader's.
+    c.handle(2000, &s, Event::FaderTaken(6.0)).unwrap();
+    assert_eq!(c.act.pump, PumpMode::PressureControl);
+    assert_eq!(c.act.bypass_valve, TwoWay::Closed);
+    assert_eq!(c.pressure_target_bar, Some(6.0));
+    assert_eq!(c.flow_target_ml_per_s, None);
+    c.tick(DT, 2025, &s);
+    assert_eq!(c.fader, 0.6);
+
+    // The steps stand still: no exit on pressure and none on time.
+    s.brew_bar = 6.0;
+    c.tick(DT, 60_000, &s);
+    assert_eq!(c.shot.unwrap().step_index, 0);
+    assert_eq!(c.pressure_target_bar, Some(6.0));
+
+    // The limits hold whatever the hand asks for.
+    c.handle(60_100, &s, Event::FaderTaken(50.0)).unwrap();
+    assert_eq!(c.pressure_target_bar, Some(c.cfg.manual_max_bar));
+    c.handle(60_200, &s, Event::FaderTaken(-3.0)).unwrap();
+    assert_eq!(c.pressure_target_bar, Some(c.cfg.manual_min_bar));
+    c.cfg.brew_pressure_limit_bar = 7.0;
+    c.handle(60_300, &s, Event::FaderTaken(9.0)).unwrap();
+    c.tick(DT, 60_325, &s);
+    assert_eq!(
+        c.pressure_target_bar,
+        Some(6.0),
+        "never past a bar short of the pressure limit"
+    );
+    c.cfg.brew_pressure_limit_bar = 11.0;
+
+    // Given back: the step begins again and ramps from where the hand
+    // left the pressure.
+    c.handle(61_000, &s, Event::FaderTaken(4.0)).unwrap();
+    c.handle(61_100, &s, Event::FaderGiven).unwrap();
+    let shot = c.shot.unwrap();
+    assert_eq!((shot.manual, shot.step_started_at, shot.step_index), (None, 61_100, 0));
+    assert_eq!(c.act.pump, PumpMode::FlowControl);
+    // Giving it back twice changes nothing.
+    let before = c;
+    c.handle(61_100, &s, Event::FaderGiven).unwrap();
+    assert_eq!(c, before);
+
+    // A manual shot still stops on weight and on the shot timeout.
+    c.handle(62_000, &s, Event::FaderTaken(8.0)).unwrap();
+    c.tick(DT, 121_000, &s);
+    assert_eq!(c.last_shot.unwrap().state, ShotState::StoppedByTime);
+    assert!(hydraulics_idle(&c));
+}
+
+#[test]
+fn the_selector_chooses_what_the_fader_stands_for() {
+    let mut c = ready();
+    let s = warm();
+    let select = |c: &mut Controller, at: Ms, mode: FaderMode| c.handle(at, &s, Event::FaderModeSelected(mode));
+    let run = |c: &mut Controller, from: Ms, to: Ms| {
+        let mut now = from;
+        while now < to {
+            now += 25;
+            c.tick(DT, now, &s);
+        }
+    };
+    // The selector turns with the machine at rest, and the fader stays
+    // at rest.
+    select(&mut c, 500, FaderMode::Temperature).unwrap();
+    assert_eq!(c.fader_mode, FaderMode::Temperature);
+    c.handle(1000, &s, Event::ShotRequested).unwrap();
+
+    // On temperature the motor carries the fader to the water asked
+    // for: 93 C is 13 of the 20 degrees of travel.
+    run(&mut c, 1000, 5000);
+    assert!((c.fader - 0.65).abs() < 0.01, "got {}", c.fader);
+
+    // Taken in hand, the fader is the water temperature. The step
+    // carries on with its own flow.
+    c.handle(5000, &s, Event::FaderTaken(88.0)).unwrap();
+    c.tick(DT, 5025, &s);
+    assert_eq!(c.shot.unwrap().manual, Some(Hold::Celsius(88.0)));
+    assert_eq!(c.mix_target_c, Some(88.0));
+    assert_eq!(c.act.pump, PumpMode::FlowControl);
+    assert_eq!(c.flow_target_ml_per_s, Some(2.0));
+    assert!((c.fader - 0.4).abs() < 1.0e-5);
+
+    // The limits hold whatever the hand asks for, and the mix limit
+    // holds a degree lower still.
+    c.handle(5100, &s, Event::FaderTaken(150.0)).unwrap();
+    assert_eq!(c.mix_target_c, Some(c.cfg.manual_max_c));
+    c.handle(5200, &s, Event::FaderTaken(20.0)).unwrap();
+    assert_eq!(c.mix_target_c, Some(c.cfg.manual_min_c));
+    c.cfg.mix_limit_c = 95.0;
+    c.handle(5300, &s, Event::FaderTaken(97.0)).unwrap();
+    c.tick(DT, 5325, &s);
+    assert_eq!(c.mix_target_c, Some(94.0));
+    c.cfg.mix_limit_c = 99.0;
+
+    // The held water stays held when the step changes.
+    c.handle(5400, &s, Event::FaderTaken(90.0)).unwrap();
+    c.handle(5500, &s, Event::StepAdvanceRequested).unwrap();
+    c.tick(DT, 5525, &s);
+    assert_eq!(c.shot.unwrap().step_index, 1);
+    assert_eq!(c.mix_target_c, Some(90.0));
+
+    // Given back, the step was not begun again, and the water is on
+    // the step's own ramp. The step was entered with the water held at
+    // 90 C, so it ramps from there to its 93 C over its 4 s.
+    c.handle(6000, &s, Event::FaderGiven).unwrap();
+    let shot = c.shot.unwrap();
+    assert_eq!((shot.manual, shot.step_started_at), (None, 5500));
+    assert_eq!(c.mix_target_c, Some(90.375));
+    run(&mut c, 6000, 9600);
+    assert_eq!(c.mix_target_c, Some(93.0));
+
+    // Turning the selector lets go of whatever the hand held.
+    c.handle(9700, &s, Event::FaderTaken(88.0)).unwrap();
+    select(&mut c, 9800, FaderMode::Pressure).unwrap();
+    assert_eq!(c.shot.unwrap().manual, None);
+    assert_eq!(c.mix_target_c, Some(93.0));
+    c.handle(9900, &s, Event::FaderTaken(5.0)).unwrap();
+    assert_eq!(c.shot.unwrap().manual, Some(Hold::Bar(5.0)));
+    select(&mut c, 10_000, FaderMode::Time).unwrap();
+    assert_eq!(c.shot.unwrap().manual, None);
+
+    // On time the fader only shows: a hand on it is refused, with a
+    // shot running or without, and the motor carries it along with the
+    // clock. This profile has no target time, so the travel is the
+    // shot timeout of 120 s.
+    let before = c;
+    assert_eq!(
+        c.handle(10_100, &s, Event::FaderTaken(0.5)),
+        Err(Reject::FaderShowsTime)
+    );
+    assert_eq!(c, before);
+    run(&mut c, 10_100, 61_000);
+    assert!((c.fader - 0.5).abs() < 0.01, "got {}", c.fader);
+    c.handle(61_000, &s, Event::ShotStopRequested).unwrap();
+    assert_eq!(
+        c.handle(61_100, &s, Event::FaderTaken(0.5)),
+        Err(Reject::FaderShowsTime)
+    );
+    run(&mut c, 61_000, 66_000);
+    assert!(c.fader < 0.01, "it goes back to rest after the shot, got {}", c.fader);
+    assert_eq!(c.fader_mode, FaderMode::Time, "the selector stays where it was put");
+
+    // The selector's number crosses the wire, and a number that is not
+    // a mode is refused.
+    assert_eq!(
+        Reader::new(&[1.0]).event(core_wire::EV_FADER_MODE),
+        Ok(Event::FaderModeSelected(FaderMode::Temperature))
+    );
+    assert_eq!(
+        Reader::new(&[3.0]).event(core_wire::EV_FADER_MODE),
+        Err(Reject::Malformed)
+    );
+}
+
+#[test]
+fn the_motor_eases_the_fader_to_the_setpoint_and_back_to_rest() {
+    let jump = Step {
+        curve: Curve::Jump,
+        ramp_s: 0.0,
+        ..hold()
+    };
+    let profile = Profile::new(500.0, 92.0, 93.0, None, &[jump]).unwrap();
+    let mut c = ready();
+    c.handle(100, &warm(), Event::ProfileSelected(profile)).unwrap();
+    c.tick(DT, 125, &warm());
+    let s = warm();
+    c.handle(1000, &s, Event::ShotRequested).unwrap();
+    // The setpoint jumps to 9 bar. The fader does not jump.
+    let mut places = std::vec::Vec::new();
+    for i in 1..=80u64 {
+        c.tick(DT, 1000 + i * 25, &s);
+        places.push(c.fader);
+    }
+    assert!(places[0] < 0.02, "it eases away from rest, got {}", places[0]);
+    assert!(
+        places.windows(2).all(|pair| pair[1] >= pair[0]),
+        "it never goes back on its way"
+    );
+    assert!(places.iter().all(|place| *place <= 0.9 + 1.0e-4), "it never overshoots");
+    let steps: std::vec::Vec<Real> = places.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    let fastest = steps.iter().cloned().fold(0.0, Real::max);
+    assert!(
+        steps[0] < fastest / 2.0 && steps[steps.len() - 1] < fastest / 20.0,
+        "it starts slowly and arrives slower still"
+    );
+    assert!(
+        (places[79] - 0.9).abs() < 0.01,
+        "it arrives at 9 bar of 10 in 2 s, got {}",
+        places[79]
+    );
+
+    c.handle(3100, &s, Event::ShotStopRequested).unwrap();
+    for i in 1..=120u64 {
+        c.tick(DT, 3100 + i * 25, &s);
+    }
+    assert!(c.fader < 0.01, "it goes back to rest after the shot, got {}", c.fader);
 }
 
 #[test]
@@ -550,9 +762,12 @@ fn the_status_reports_the_shot_and_the_faults() {
     assert!(out[29].is_nan(), "an aborted shot has no final weight");
     assert_eq!(out[32], 1.0);
     assert_eq!(out[33], 0.0, "a faulted machine reports no flow");
-    assert_eq!(out[34], FaultKind::OverPressure as u8 as f64);
-    assert_eq!(out[35], 1.05);
-    assert!(out[36].is_nan(), "the fault has not been cleared");
+    assert!(out[34].is_nan(), "no shot, so no fader in hand");
+    assert_eq!(out[36], FaderMode::Pressure as u8 as f64);
+    assert!(out[37].is_nan(), "no shot, so no water held by hand");
+    assert_eq!(out[38], FaultKind::OverPressure as u8 as f64);
+    assert_eq!(out[39], 1.05);
+    assert!(out[40].is_nan(), "the fault has not been cleared");
 }
 
 #[test]

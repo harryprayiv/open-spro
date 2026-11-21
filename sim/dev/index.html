@@ -78,13 +78,58 @@
          The drawings are the photo slots: rounded, and the only place
          the textures appear. */
       .machine-pane .pane-body { display: flex; flex-direction: column; }
-      .views { flex: none; display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 0.8rem; align-items: center; }
+      .views { flex: none; display: grid; grid-template-columns: var(--front, 300px) 0.5rem minmax(0, 1fr); height: var(--drawings, 350px); align-items: stretch; }
+      /* The front is drawn as large as its cell allows, by whichever of
+         the cell's width and height runs out first. The drawing is 400
+         by 444 inside half a rem of padding. */
+      .front-cell { container-type: size; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; }
+      .front-cell .fader-wrap { width: min(100cqw, calc((100cqh - 1rem) / 1.11 + 1rem)); max-width: none; margin: 0; }
+      .views > .inside { width: 100%; height: 100%; min-width: 0; min-height: 0; }
       .shot-line { flex: none; }
-      .machine-pane .chart { flex: 1; min-height: 6rem; }
+      .playhead { flex: none; margin: 0.5rem 0 0.2rem; }
+      .playhead .timeline { display: block; width: 100%; height: var(--timeline, 4rem); }
+      .playhead .key { stroke: var(--rule); stroke-width: 1; }
+      .playhead .drawn { stroke: #bc6a14; stroke-width: 2; }
+      .playhead .limit { stroke: #b3261e; stroke-width: 1; stroke-dasharray: 2 3; }
+      .playhead .play-line { stroke: #e88a22; stroke-width: 2; }
+      .playhead-words { display: flex; align-items: center; gap: 0.6rem; }
+      .playhead-words .note { flex: 1; margin: 0.3rem 0; }
+      /* The fader: a slider laid over the brass plate in the machine
+         drawing. The drawing is 400 by 444 inside half a rem of padding,
+         and the plate's slot runs from 50 to 350 across and 236 to 262 down. */
+      .fader-wrap { position: relative; width: 100%; max-width: 22rem; margin: 0 auto; }
+      .fader-wrap .machine { max-width: none; }
+      .fader-wrap .fader {
+        position: absolute; margin: 0; cursor: grab;
+        left: calc(0.5rem + (100% - 1rem) * 0.125); width: calc((100% - 1rem) * 0.75);
+        top: calc(0.5rem + (100% - 1rem) * 0.5315); height: calc((100% - 1rem) * 0.0586);
+      }
+      .fader-wrap .fader:active { cursor: grabbing; }
+      .fader-wrap .fader.shows-only, .fader-wrap .fader.shows-only:active { cursor: not-allowed; }
+      .fader-wrap .fader::-webkit-slider-runnable-track { height: 100%; background: transparent; }
+      .fader-wrap .fader::-moz-range-track { height: 100%; background: transparent; }
+      .fader-wrap .fader::-webkit-slider-thumb {
+        width: 1.15rem; height: 100%; margin-top: 0; border-radius: 3px; border: 1px solid #55595d;
+        background: linear-gradient(90deg, #d9dcdf 0 44%, #1c1d1f 44% 56%, #d9dcdf 56% 100%);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+        transition: box-shadow 120ms ease;
+      }
+      .fader-wrap .fader::-moz-range-thumb {
+        width: 1.05rem; height: 100%; border-radius: 3px; border: 1px solid #55595d;
+        background: linear-gradient(90deg, #d9dcdf 0 44%, #1c1d1f 44% 56%, #d9dcdf 56% 100%);
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.55);
+      }
+      .fader-wrap .fader:hover::-webkit-slider-thumb, .fader-wrap .fader:active::-webkit-slider-thumb {
+        background: linear-gradient(90deg, #d9dcdf 0 44%, #1c1d1f 44% 56%, #d9dcdf 56% 100%); border-color: #55595d;
+        box-shadow: 0 3px 8px rgba(0, 0, 0, 0.7), 0 0 0 2px rgba(226, 87, 43, 0.55);
+      }
+      .fader-wrap .fader.by-hand::-webkit-slider-thumb { background: linear-gradient(90deg, #d9dcdf 0 44%, #e2572b 44% 56%, #d9dcdf 56% 100%); }
+      .fader-wrap .fader.by-hand::-moz-range-thumb { background: linear-gradient(90deg, #d9dcdf 0 44%, #e2572b 44% 56%, #d9dcdf 56% 100%); }
+      .fader-press { cursor: pointer; }
+      .machine-pane .chart:not(.timeline) { flex: none; height: var(--chart, 200px); }
       .machine {
         display: block; width: 100%; max-width: 22rem; margin: 0 auto; padding: 0.5rem; border-radius: 13px;
-        background-color: #55524d; background-image: linear-gradient(rgba(23, 18, 15, 0.25), rgba(23, 18, 15, 0.55)), url("../imgs/textures/brutalistWall.png");
-        background-size: cover; background-position: center;
+        background-color: #000000;
       }
 
       /* Keys: square, ruled in green. The chosen one is filled green and
@@ -248,6 +293,12 @@
       .gutter { cursor: col-resize; background: linear-gradient(90deg, transparent 42%, var(--line) 42%, var(--line) 58%, transparent 58%); }
       .gutter:hover, .desk.dragging .gutter { background: linear-gradient(90deg, transparent 30%, var(--orange) 30%, var(--orange) 70%, transparent 70%); }
       .desk.dragging { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+      /* An edge that lies flat, between two things one over the other. */
+      .gutter.flat { flex: none; height: 0.5rem; cursor: row-resize; background: linear-gradient(transparent 42%, var(--line) 42%, var(--line) 58%, transparent 58%); }
+      .gutter.flat:hover, .desk.dragging.flat .gutter.flat { background: linear-gradient(transparent 30%, var(--orange) 30%, var(--orange) 70%, transparent 70%); }
+      .desk.dragging.flat { cursor: row-resize; }
+      .desk.dragging.flat .gutter:not(.flat) { background: linear-gradient(90deg, transparent 42%, var(--line) 42%, var(--line) 58%, transparent 58%); }
+      .desk.dragging:not(.flat) .gutter.flat { background: linear-gradient(transparent 42%, var(--line) 42%, var(--line) 58%, transparent 58%); }
       .phone-bar { display: none; }
 
       /* Inside: a valve's gate lies along the pipe when open and swings
@@ -267,7 +318,12 @@
         .gutter, .desk .pane { display: none; }
         .desk.phone-0 .machine-pane, .desk.phone-1 .controls-pane, .desk.phone-2 .bench-pane { display: flex; height: 100%; }
         .pane-body { overflow-y: auto; }
-        .views { grid-template-columns: 1fr; }
+        .views { grid-template-columns: 1fr; height: auto; }
+        .front-cell { container-type: normal; }
+        .front-cell .fader-wrap { width: 100%; max-width: 22rem; margin: 0 auto; }
+        .views > .inside { height: auto; }
+        .playhead .timeline { height: 4rem; }
+        .machine-pane .chart:not(.timeline) { height: auto; flex: 1; min-height: 6rem; }
         .bean { grid-template-columns: 8rem 1fr; gap: 0.6rem; }
         .field { grid-template-columns: 5rem 1fr 3.8rem 2.6rem 2.8rem; gap: 0.35rem; }
         .design-top { grid-template-columns: 1fr; }

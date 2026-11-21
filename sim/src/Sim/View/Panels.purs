@@ -7,6 +7,7 @@ import Prelude
 import Data.Array (findIndex, index, last, length, mapWithIndex, null, reverse, take)
 import Data.Array.NonEmpty as NEA
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Number as Number
 import Data.Number.Format (fixed, toStringWith)
 import Data.String (joinWith)
 import Halogen.HTML as HH
@@ -14,17 +15,19 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Sim.Cup as Cup
 import Sim.Flavor as Flavor
-import Sim.Link (Event(..))
+import Sim.Link (Event(..), FaderMode(..), faderScale)
 import Sim.Machine (Machine, silence)
 import Sim.Invariants (checks)
+import Sim.Layout (Edge(..), upright)
 import Sim.Model (Action(..), Field(..), State)
 import Sim.Problems (Problems, anyProblem)
 import Sim.Recipe (Recipe, Roast, roastLabel, roastNote, roasts, samples, targetGrams)
-import Sim.Types (ClientKind(..), FaultKind(..), PowerMode(..), Shot, StepMode(..))
-import Sim.Update (allShapes, applyRecipe, chooseRoast, chooseShape, fieldKey, findGrind, isLocked, limitsOf, setField, simView, toggleLock, valueOf)
+import Sim.Types (ClientKind(..), FaultKind(..), PowerMode(..), Shot)
+import Sim.Update (allShapes, applyRecipe, chooseRoast, chooseShape, fieldKey, findGrind, isLocked, limitsOf, faderReading, playheadAt, setField, simView, toggleLock, valueOf)
 import Sim.View.Bench (adviceLine, forecastLine)
 import Sim.View.Chart (chart)
 import Sim.View.Front (front)
+import Sim.View.Playhead (playhead)
 import Sim.View.Inside (inside)
 import Sim.View.Wheel (wheel)
 import Sim.View.Widgets (button, chosen, cls, clock, legend, n1, n2, numBox, primary, row, rowIf, section, segmented, slider, table, toggle)
@@ -45,10 +48,14 @@ machineView st wrong =
     c = m.status
     s = m.sensors
     sim = simView st
+    scale = faderScale c.faderMode
+    held = isJust (c.shot >>= _.manual) || isJust (c.shot >>= _.manualC)
   in
     [ nowPlaying st
     , HH.div [ cls "views" ]
-        [ front
+        [ HH.div [ cls "front-cell" ]
+            [ HH.div [ cls "fader-wrap" ]
+            [ front
             { now: m.at
             , state: c.state
             , brewBar: s.brewBar
@@ -63,17 +70,43 @@ machineView st wrong =
             , groupHeaterOn: c.act.groupHeaterOn
             , pouring: isJust c.shot && s.cupGrams > 0.05 && s.brewBar > 0.3
             , steaming: sim.dist.steamValveOpen && s.steamBar > 0.2
-            , paddle: case m.shot of
-                Nothing -> 0
-                Just shot ->
-                  if shot.step.mode == LinePrebrew || (shot.stepIndex == 0 && NEA.length shot.profile.steps > 1) then 1
-                  else 2
+            , fader: (faderReading st - scale.low) / (scale.high - scale.low)
+            , mode: c.faderMode
+            , faderValue: case c.faderMode of
+                OnPressure -> n1 (faderReading st) <> " bar"
+                OnTemperature -> n1 (faderReading st) <> " C"
+                OnTime -> n1 (playheadAt st) <> " s"
+            , running: isJust c.shot
+            , manual: held
             , problem: anyProblem wrong
             , flowMlPerS: c.flowMlPerS
             -- The colour of the stream is read off the simulated puck.
             -- A real machine cannot see it.
             , streamColour: Cup.streamColour st.recipe.roast sim.puck.extracted sim.puck.evenness c.flowMlPerS
             }
+            -- The fader itself: a slider laid over the slot in the
+            -- drawing, on the scale the selector has chosen. Left alone
+            -- it shows where the machine's motor has put it. On time it
+            -- cannot be taken in hand.
+            , HH.input
+                [ HP.type_ HP.InputRange
+                , cls ("fader" <> (if held then " by-hand" else "") <> (if c.faderMode == OnTime then " shows-only" else ""))
+                , HP.title case c.faderMode of
+                    OnPressure -> "The fader: pressure, in bar"
+                    OnTemperature -> "The fader: water temperature, in degrees C"
+                    OnTime -> "The fader: how far the shot has run. It only shows."
+                , HP.disabled (c.faderMode == OnTime)
+                , HP.min scale.low
+                , HP.max scale.high
+                , HP.step (HP.Step ((scale.high - scale.low) / 200.0))
+                , HP.value (show (faderReading st))
+                , HE.onValueInput \text -> FaderDrag (fromMaybe 0.0 (Number.fromString text))
+                , HE.onValueChange \_ -> FaderDrop
+                , HE.onMouseUp \_ -> FaderDrop
+                ]
+            ]
+            ]
+        , edge FrontEdge
         , inside
             { now: m.at
             , act: c.act
@@ -86,8 +119,12 @@ machineView st wrong =
             , problems: wrong
             }
         ]
+    , edge DrawingsEdge
+    , playhead st
+    , edge TimelineEdge
     , HH.p [ cls "shot-line" ] [ HH.text (shotLine m) ]
     , chart m.trace
+    , edge ChartEdge
     , HH.p [ cls "legend" ]
         [ legend "bar" "pressure, bar (0 to 12)"
         , legend "flow" "flow, ml/s (0 to 12)"
@@ -96,6 +133,16 @@ machineView st wrong =
         , legend "grams" "in cup, g (0 to 60)"
         ]
     ]
+
+-- | An edge between two things in the machine pane, to drag.
+edge :: forall w. Edge -> HH.HTML w Action
+edge which =
+  HH.div
+    [ cls ("gutter" <> (if upright which then "" else " flat"))
+    , HP.title "Drag to resize"
+    , HE.onMouseDown (GutterDown which)
+    ]
+    []
 
 ------------------------------------------------------------
 -- Controls pane, brew tab
