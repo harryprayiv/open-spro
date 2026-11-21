@@ -233,6 +233,12 @@ handleAction = case _ of
           sizes = Layout.dragEdge d.edge (toNumber (x - d.x)) (toNumber (y - d.y)) st.sizes
         in
           H.modify_ _ { sizes = sizes, drag = Just d { x = x, y = y } }
+  TidyWindows -> do
+    st <- H.get
+    let sizes = Layout.tidied st.sizes
+    H.liftEffect (Store.save sizesKey (Layout.encodeSizes sizes))
+    H.modify_ _ { sizes = sizes }
+
   GutterUp -> do
     st <- H.get
     when (isJust st.drag) do
@@ -262,7 +268,7 @@ render st =
     night = st.theme == Night
     open = st.view.benchOpen
     dragging = case st.drag of
-      Just d -> if Layout.upright d.edge then " dragging" else " dragging flat"
+      Just d -> Layout.dragClass d.edge
       Nothing -> ""
     count = length wrong.lines
   in

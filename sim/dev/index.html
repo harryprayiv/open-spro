@@ -8,7 +8,7 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="theme-color" content="#17120f">
-    <title>open-spro</title>
+    <title>Espresso simulator</title>
     <style>
       /* The design language of the kissaten press packet: flat paper and
          ink, square keys, 2px rules in deep green, burnt orange for the
@@ -72,13 +72,41 @@
          The drawings are the photo slots: rounded, and the only place
          the textures appear. */
       .machine-pane .pane-body { display: flex; flex-direction: column; }
-      .views { flex: none; display: grid; grid-template-columns: var(--front, 300px) 0.5rem minmax(0, 1fr); height: var(--drawings, 350px); align-items: stretch; }
+      /* The area the two drawings share. Each is a window in it, placed
+         and sized by the program: a title to drag it by, the drawing,
+         and a corner to resize it by. */
+      .views { flex: none; position: relative; height: var(--drawings, 380px); overflow: hidden; }
+      .win { position: absolute; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--card); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; z-index: 1; }
+      .win.in-front { z-index: 2; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28); }
+      .win-title { flex: none; padding: 0.12rem 0.6rem; cursor: grab; user-select: none; -webkit-user-select: none; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.6rem; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); }
+      .win-title:hover { color: var(--orange); }
+      .win-body { flex: 1; min-width: 0; min-height: 0; }
+      .win-body > * { width: 100%; height: 100%; }
+      .win-corner { position: absolute; right: 0; bottom: 0; width: 1rem; height: 1rem; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, var(--line) 50%, var(--line) 62%, transparent 62%, transparent 74%, var(--line) 74%, var(--line) 86%, transparent 86%); }
+      .win-corner:hover { background: linear-gradient(135deg, transparent 50%, var(--orange) 50%, var(--orange) 62%, transparent 62%, transparent 74%, var(--orange) 74%, var(--orange) 86%, transparent 86%); }
+      .views .tidy { position: absolute; right: 0.3rem; bottom: 0.3rem; z-index: 0; padding: 0.1rem 0.5rem; font-size: 0.6rem; letter-spacing: 0.18em; text-transform: uppercase; }
+      .desk.dragging.moving { cursor: grabbing; }
+      .desk.dragging.sizing { cursor: nwse-resize; }
       /* The front is drawn as large as its cell allows, by whichever of
          the cell's width and height runs out first. The drawing is 400
          by 444 inside half a rem of padding. */
       .front-cell { container-type: size; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; }
       .front-cell .fader-wrap { width: min(100cqw, calc((100cqh - 1rem) / 1.11 + 1rem)); max-width: none; margin: 0; }
-      .views > .inside { width: 100%; height: 100%; min-width: 0; min-height: 0; }
+      /* The plumbing is drawn three ways, and its window shows the one
+         that suits its shape: tall when it is narrower than it is
+         high, a strip when it is far wider than it is high, and wide
+         otherwise. */
+      .inside-cell { container-type: size; min-width: 0; min-height: 0; }
+      .inside-cell .inside { display: none; width: 100%; height: 100%; border-radius: 0; border: 0; }
+      .inside-cell .inside.wide { display: block; }
+      @container (max-aspect-ratio: 9 / 10) {
+        .inside-cell .inside.wide { display: none; }
+        .inside-cell .inside.tall { display: block; }
+      }
+      @container (min-aspect-ratio: 29 / 10) {
+        .inside-cell .inside.wide { display: none; }
+        .inside-cell .inside.strip { display: block; }
+      }
       .shot-line { flex: none; }
       .playhead { flex: none; margin: 0.5rem 0 0.2rem; }
       .playhead .key { stroke: var(--rule); stroke-width: 1; }
@@ -372,10 +400,13 @@
         .gutter, .desk .pane { display: none; }
         .desk.phone-0 .machine-pane, .desk.phone-1 .controls-pane, .desk.phone-2 .bench-pane { display: flex; height: 100%; }
         .pane-body { overflow-y: auto; }
-        .views { grid-template-columns: 1fr; height: auto; }
+        .views { height: auto; overflow: visible; }
+        .win { position: static; width: auto !important; height: auto !important; border: 0; margin-bottom: 0.5rem; }
+        .win-title, .win-corner, .views .tidy { display: none; }
+        .inside-cell { container-type: normal; }
         .front-cell { container-type: normal; }
         .front-cell .fader-wrap { width: 100%; max-width: 22rem; margin: 0 auto; }
-        .views > .inside { height: auto; }
+        .inside-cell .inside { height: auto; }
         .machine-pane .chart:not(.timeline) { height: auto; flex: 1; min-height: 6rem; }
         .bean { grid-template-columns: 8rem 1fr; gap: 0.6rem; }
         .field { grid-template-columns: 5rem 1fr 3.8rem 2.6rem 2.8rem; gap: 0.35rem; }

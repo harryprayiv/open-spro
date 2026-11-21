@@ -136,3 +136,5 @@ data Action
   | GutterDown Edge MouseEvent
   | GutterMove MouseEvent
   | GutterUp
+  -- Put the two drawings' windows back where they start.
+  | TidyWindows

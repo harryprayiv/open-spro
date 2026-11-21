@@ -19,7 +19,7 @@ import Sim.Flavor as Flavor
 import Sim.Link (Event(..), FaderMode(..), faderScale)
 import Sim.Machine (Machine, silence)
 import Sim.Invariants (checks)
-import Sim.Layout (Edge(..), upright)
+import Sim.Layout (Edge(..), Window(..), boxOf, boxStyle)
 import Sim.Model (Action(..), Field(..), Play(..), State, Theme(..))
 import Sim.Problems (Problems, anyProblem)
 import Sim.Recipe (Recipe, Roast, roastLabel, roastNote, roasts, samples, targetGrams)
@@ -55,7 +55,8 @@ machineView st wrong =
   in
     [ nowPlaying st
     , HH.div [ cls "views" ]
-        [ HH.div [ cls "front-cell" ]
+        [ window st FrontWindow "machine"
+            [ HH.div [ cls "front-cell" ]
             [ HH.div [ cls "fader-wrap" ]
             [ front
             { now: m.at
@@ -116,8 +117,9 @@ machineView st wrong =
                 ]
             ]
             ]
-        , edge FrontEdge
-        , inside
+            ]
+        , window st InsideWindow "inside"
+            [ inside
             { now: m.at
             , act: c.act
             , flowMlPerS: c.flowMlPerS
@@ -128,6 +130,8 @@ machineView st wrong =
             , steamValveOpen: sim.dist.steamValveOpen
             , problems: wrong
             }
+            ]
+        , HH.button [ cls "tidy", HP.title "Put the two windows back side by side", HE.onClick \_ -> TidyWindows ] [ HH.text "tidy" ]
         ]
     , edge DrawingsEdge
     , playhead st
@@ -143,11 +147,26 @@ machineView st wrong =
         ]
     ]
 
--- | An edge between two things in the machine pane, to drag.
+-- | One of the two drawings as a window in the area they share: a
+-- | title to drag it by, the drawing, and a corner to resize it by.
+-- | Whichever was touched last is in front.
+window :: forall w. State -> Window -> String -> Array (HH.HTML w Action) -> HH.HTML w Action
+window st which title content =
+  HH.div
+    [ cls ("win" <> (if (which == FrontWindow) == st.sizes.frontOnTop then " in-front" else ""))
+    , HP.style (boxStyle (boxOf which st.sizes))
+    ]
+    [ HH.div [ cls "win-title", HP.title "Drag to move", HE.onMouseDown (GutterDown (Move which)) ] [ HH.text title ]
+    , HH.div [ cls "win-body" ] content
+    , HH.div [ cls "win-corner", HP.title "Drag to resize", HE.onMouseDown (GutterDown (Resize which)) ] []
+    ]
+
+-- | An edge that lies flat between two things in the machine pane, to
+-- | drag.
 edge :: forall w. Edge -> HH.HTML w Action
 edge which =
   HH.div
-    [ cls ("gutter" <> (if upright which then "" else " flat"))
+    [ cls "gutter flat"
     , HP.title "Drag to resize"
     , HE.onMouseDown (GutterDown which)
     ]
@@ -169,6 +188,19 @@ brew st =
         , button "Stop" (Send ShotStopRequested)
         , toggle "Steam" sim.dist.steamValveOpen (Disturb \d -> d { steamValveOpen = not d.steamValveOpen })
         ]
+    -- Power sits directly under the shot buttons, where it shows without
+    -- scrolling. Only the simulator can skip a warm-up, so realistic play
+    -- does not offer that button.
+    , HH.div [ cls "choices" ]
+        ( [ button "Wake, brew" (Send (WakeRequested BrewReady))
+          , button "Wake, brew and steam" (Send (WakeRequested Full))
+          , button "Sleep" (Send SleepRequested)
+          ]
+            <> (if st.play == Arcade then [ button "Skip warm-up" SkipWarmUp ] else [])
+            <> [ segmented (map (\speed -> chosen (sim.speed == speed) (show speed <> "x") (SetSpeed speed)) [ 1, 10, 60 ])
+              , button "Reset" Reset
+              ]
+        )
     , section "Beans" (map presetButton samples <> map savedPreset st.saved)
     , HH.div [ cls "bean" ]
         [ roastDrum r.roast
@@ -204,17 +236,6 @@ brew st =
                 (allShapes st)
             )
         ]
-    , section "Machine"
-        ( [ button "Wake, brew" (Send (WakeRequested BrewReady))
-          , button "Wake, brew and steam" (Send (WakeRequested Full))
-          , button "Sleep" (Send SleepRequested)
-          , segmented (map (\speed -> chosen (sim.speed == speed) (show speed <> "x") (SetSpeed speed)) [ 1, 10, 60 ])
-          ]
-            -- Only the simulator can skip a warm-up, so realistic play
-            -- does not offer it.
-            <> (if st.play == Arcade then [ button "Skip warm-up" SkipWarmUp ] else [])
-            <> [ button "Reset" Reset ]
-        )
     ]
 
 -- | The beans in use, shown over the machine while it is in use.
