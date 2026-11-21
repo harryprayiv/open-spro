@@ -7,6 +7,11 @@
 -- | the scale and the steam wand on its turret. Steel, cedar, wood and
 -- | concrete come from the images in sim/imgs/textures; every textured
 -- | shape has a flat colour beneath it in case an image is missing.
+-- |
+-- | The front has two looks. By day it is as described. By night the
+-- | steel goes dark, the dial is lit from behind, every hand and figure
+-- | takes a colour from cool to warm by how far along its scale it is,
+-- | and a light hidden above the cup picks the shot out of the dark.
 module Sim.View.Front
   ( FrontInput
   , Ink
@@ -27,11 +32,14 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Sim.Link (Event(..), FaderMode(..), faderWord, nextFaderMode)
 import Sim.Model (Action(..))
+import Sim.Tint (coolToWarm)
 import Sim.Types (MachineState(..))
-import Sim.View.Svg (Attr, at, circle, defs, fitted, g, label, line, num, path, polyline, rect, svg, texture)
+import Sim.View.Svg (Attr, at, circle, defs, falling, fitted, g, glow, label, line, num, path, polyline, rect, svg, texture)
 
 type FrontInput =
   { now :: Number
+  -- Whether the page is in its night theme.
+  , night :: Boolean
   , state :: MachineState
   , brewBar :: Number
   , steamBar :: Number
@@ -107,6 +115,58 @@ orange = "#e2572b"
 sans :: String
 sans = "'Helvetica Neue', Helvetica, Arial, sans-serif"
 
+gold :: String
+gold = "#c9a24a"
+
+-- | What differs between the day face and the night face.
+type Look =
+  { night :: Boolean
+  -- lettering on the face, and the quieter lettering of labels
+  , lettering :: String
+  , label :: String
+  -- the colour of a hand or a figure this far along its scale, from 0
+  -- to 1, and of the smaller steam scale
+  , figure :: Number -> String
+  , steamFigure :: Number -> String
+  -- a figure in a black window, this far along its scale
+  , lit :: Number -> String
+  -- the wash over the steel, bare metal parts, and a lamp that is off
+  , wash :: String
+  , washStrength :: String
+  , metal :: String
+  , metalEdge :: String
+  , dark :: String
+  }
+
+lookOf :: Boolean -> Look
+lookOf night =
+  if night then
+    { night
+    , lettering: "#f4eedf"
+    , label: "#a39a8d"
+    , figure: coolToWarm
+    , steamFigure: coolToWarm
+    , lit: coolToWarm
+    , wash: "#0b0908"
+    , washStrength: "0.66"
+    , metal: "#4a4d50"
+    , metalEdge: "#2a2c2e"
+    , dark: "#3a3632"
+    }
+  else
+    { night
+    , lettering: ink
+    , label: quiet
+    , figure: const ink
+    , steamFigure: const orange
+    , lit: const paper
+    , wash: "#ffffff"
+    , washStrength: "0.42"
+    , metal: "#c5cace"
+    , metalEdge: steelEdge
+    , dark: "#8d9297"
+    }
+
 textures :: String
 textures = "../imgs/textures/"
 
@@ -117,12 +177,12 @@ faced name fallback attrs =
   , rect (attrs <> [ at "fill" ("url(#" <> name <> ")") ])
   ]
 
--- | Brushed steel: the texture with a wash of white over it, so black
--- | lettering reads on it.
-steel :: forall w i. Array Attr -> Array (HH.HTML w i)
-steel attrs =
+-- | Brushed steel: the texture with a wash over it. By day the wash is
+-- | white, so black lettering reads on it. By night it is near black.
+steel :: forall w i. Look -> Array Attr -> Array (HH.HTML w i)
+steel k attrs =
   faced "alu" "#b9bec4" attrs
-    <> [ rect (attrs <> [ at "fill" "#ffffff", at "opacity" "0.42" ]) ]
+    <> [ rect (attrs <> [ at "fill" k.wash, at "opacity" k.washStrength ]) ]
 
 -- | A point on a dial. Zero degrees is straight up, positive is clockwise.
 onDial :: Number -> Number -> Number -> Number -> { x :: Number, y :: Number }
@@ -136,11 +196,13 @@ onDial cx cy radius degrees =
 -- | hairline marks and plain numerals. The outer scale and the long
 -- | black hand are the brew pressure. The inner scale and the short
 -- | orange hand are the steam pressure. Each scale has a red arc from
--- | its `redFrom` up.
+-- | its `redFrom` up. By night the face is dark and lit from behind,
+-- | and each mark, numeral and hand is coloured by where it is on its
+-- | scale.
 type Scale = { most :: Int, labelEvery :: Int, redFrom :: Number, value :: Number }
 
-dualGauge :: forall w i. Number -> Number -> Scale -> Scale -> HH.HTML w i
-dualGauge cx cy brew steam =
+dualGauge :: forall w i. Look -> Number -> Number -> Scale -> Scale -> HH.HTML w i
+dualGauge k cx cy brew steam =
   let
     r = 58.0
     sweep scale v = -135.0 + 270.0 * clamp 0.0 1.0 (v / toNumber scale.most)
@@ -152,9 +214,11 @@ dualGauge cx cy brew steam =
         "M" <> num from.x <> "," <> num from.y
           <> " A" <> num radius <> "," <> num radius <> " 0 0 1 "
           <> num to.x <> "," <> num to.y
-    mark colour from long short scale parts n =
+    along scale v = clamp 0.0 1.0 (v / toNumber scale.most)
+    mark colourAt from long short scale parts n =
       let
         whole = n `mod` parts == 0
+        colour = colourAt (along scale (toNumber n / toNumber parts))
         angle = sweep scale (toNumber n / toNumber parts)
         outer = onDial cx cy from angle
         inner = onDial cx cy (from - (if whole then long else short)) angle
@@ -164,9 +228,10 @@ dualGauge cx cy brew steam =
           , at "x2" (num inner.x), at "y2" (num inner.y)
           , at "stroke" colour, at "stroke-width" (if whole then "1.3" else "0.6")
           ]
-    numeral colour radius size scale n =
+    numeral colourAt radius size scale n =
       let
         p = onDial cx cy radius (sweep scale (toNumber n))
+        colour = colourAt (along scale (toNumber n))
       in
         label
           [ at "x" (num p.x), at "y" (num (p.y + size * 0.36))
@@ -174,9 +239,10 @@ dualGauge cx cy brew steam =
           ]
           (show n)
     labelled scale = map (_ * scale.labelEvery) (range 0 (scale.most / scale.labelEvery))
-    hand scale reach width colour =
+    hand scale reach width colourAt =
       let
         angle = sweep scale scale.value
+        colour = colourAt (along scale scale.value)
         tip = onDial cx cy reach angle
         tail = onDial cx cy 9.0 (angle + 180.0)
       in
@@ -193,53 +259,56 @@ dualGauge cx cy brew steam =
         text
   in
     g []
-      ( [ circle [ at "cx" (num cx), at "cy" (num cy), at "r" (num (r + 3.0)), at "fill" ink ]
-        , circle [ at "cx" (num cx), at "cy" (num cy), at "r" (num r), at "fill" paper ]
+      ( [ circle [ at "cx" (num cx), at "cy" (num cy), at "r" (num (r + 3.0)), at "fill" (if k.night then gold else ink) ]
+        , circle [ at "cx" (num cx), at "cy" (num cy), at "r" (num (if k.night then r + 1.6 else r)), at "fill" (if k.night then "#14100d" else paper) ]
+        , circle [ at "cx" (num cx), at "cy" (num cy), at "r" (num r), at "fill" (if k.night then "url(#dial-light)" else "none") ]
         , path [ at "d" (arc (r - 4.5) brew), at "fill" "none", at "stroke" bad, at "stroke-width" "2" ]
         , path [ at "d" (arc (r - 31.5) steam), at "fill" "none", at "stroke" bad, at "stroke-width" "1.5" ]
         ]
-          <> map (mark ink (r - 6.0) 7.0 3.5 brew 2) (range 0 (brew.most * 2))
-          <> map (numeral ink (r - 20.0) 8.5 brew) (labelled brew)
-          <> map (mark orange (r - 33.0) 4.0 2.0 steam 2) (range 0 (steam.most * 2))
-          <> map (numeral orange (r - 43.5) 6.5 steam) (labelled steam)
+          <> map (mark k.figure (r - 6.0) 7.0 3.5 brew 2) (range 0 (brew.most * 2))
+          <> map (numeral k.figure (r - 20.0) 8.5 brew) (labelled brew)
+          <> map (mark k.steamFigure (r - 33.0) 4.0 2.0 steam 2) (range 0 (steam.most * 2))
+          <> map (numeral k.steamFigure (r - 43.5) 6.5 steam) (labelled steam)
           <>
-            [ word 49.0 quiet "brew  bar"
-            , word 30.0 orange "steam"
-            , hand steam (r - 34.0) "1.6" orange
-            , hand brew (r - 8.0) "2" ink
-            , circle [ at "cx" (num cx), at "cy" (num cy), at "r" "3.4", at "fill" ink ]
+            [ word 49.0 k.label "brew  bar"
+            , word 30.0 (if k.night then k.label else orange) "steam"
+            , hand steam (r - 34.0) "1.6" k.steamFigure
+            , hand brew (r - 8.0) "2" k.figure
+            , circle [ at "cx" (num cx), at "cy" (num cy), at "r" "3.4", at "fill" (if k.night then gold else ink) ]
             ]
       )
 
 -- | A lamp: a small dot that is lit or not, with its name under it.
-lamp :: forall w i. Number -> Number -> String -> Boolean -> String -> HH.HTML w i
-lamp x y title lit colour =
+lamp :: forall w i. Look -> Number -> Number -> String -> Boolean -> String -> HH.HTML w i
+lamp k x y title lit colour =
   g []
     [ circle
         [ at "cx" (num x), at "cy" (num y), at "r" "3.6"
-        , at "fill" (if lit then colour else "#8d9297")
+        , at "fill" (if lit then colour else k.dark)
         , at "stroke" ink, at "stroke-width" "0.6"
         ]
     , label
         [ at "x" (num x), at "y" (num (y + 12.0)), at "text-anchor" "middle"
-        , at "font-size" "5.5", at "font-family" sans, at "letter-spacing" "0.3", at "fill" quiet
+        , at "font-size" "5.5", at "font-family" sans, at "letter-spacing" "0.3", at "fill" k.label
         ]
         title
     ]
 
--- | A small figure in a black window, its name to the left of it.
-readout :: forall w i. Number -> String -> String -> HH.HTML w i
-readout y title value =
+-- | A small figure in a black window, its name to the left of it. The
+-- | last number is how far along its scale the figure is, from 0 to 1,
+-- | which by night decides its colour.
+readout :: forall w i. Look -> Number -> String -> String -> Number -> HH.HTML w i
+readout k y title value fraction =
   g []
     [ label
         [ at "x" "301", at "y" (num (y + 11.5)), at "text-anchor" "end", at "font-size" "5.5"
-        , at "font-family" sans, at "letter-spacing" "0.3", at "fill" quiet
+        , at "font-family" sans, at "letter-spacing" "0.3", at "fill" k.label
         ]
         title
     , rect [ at "x" "306", at "y" (num y), at "width" "48", at "height" "17", at "rx" "2", at "fill" window ]
     , label
         [ at "x" "330", at "y" (num (y + 12.5)), at "text-anchor" "middle"
-        , at "font-size" "10.5", at "font-family" "monospace", at "fill" paper
+        , at "font-size" "10.5", at "font-family" "monospace", at "fill" (k.lit fraction)
         ]
         value
     ]
@@ -250,8 +319,8 @@ readout y title value =
 -- | pressure asked for so far is a solid black one. An upright line
 -- | marks how far the shot has run. E-ink has no colour and holds its
 -- | picture with the power off.
-inkDisplay :: forall w i. Ink -> HH.HTML w i
-inkDisplay page =
+inkDisplay :: forall w i. Look -> Ink -> HH.HTML w i
+inkDisplay k page =
   let
     left = 177.0
     top = 93.0
@@ -318,18 +387,24 @@ inkDisplay page =
                 ]
                 (toStringWith (fixed 0) (if page.running then page.place else span) <> " s")
             ]
+          <>
+            -- By night the panel has only its dim front light.
+            ( if k.night then
+                [ rect [ at "x" (num left), at "y" (num top), at "width" (num width), at "height" (num height), at "fill" "#1a1206", at "opacity" "0.42" ] ]
+              else []
+            )
       )
 
 -- | The window over the middle of the fader: the value the fader is
 -- | at. What the value is a value of is in the selector's window beside
 -- | it.
-faderWindow :: forall w i. String -> HH.HTML w i
-faderWindow value =
+faderWindow :: forall w i. Look -> String -> Number -> HH.HTML w i
+faderWindow k value fraction =
   g []
     [ rect [ at "x" "154", at "y" "200", at "width" "92", at "height" "28", at "rx" "2", at "fill" window ]
     , label
         [ at "x" "200", at "y" "220", at "text-anchor" "middle"
-        , at "font-size" "15", at "font-family" "monospace", at "fill" paper
+        , at "font-size" "15", at "font-family" "monospace", at "fill" (k.lit fraction)
         ]
         value
     ]
@@ -339,8 +414,8 @@ faderWindow value =
 -- | beside the wheel faces the front and shows the word the drum is
 -- | on, with the edges of its neighbours above and below. On time,
 -- | where the fader cannot be moved, the word is red.
-selector :: forall w. FaderMode -> HH.HTML w Action
-selector mode =
+selector :: forall w. Look -> FaderMode -> HH.HTML w Action
+selector k mode =
   let
     next = nextFaderMode mode
     before = nextFaderMode next
@@ -348,7 +423,7 @@ selector mode =
       let
         gy = 203.5 + 3.5 * toNumber i
       in
-        line [ at "x1" "9", at "x2" "29", at "y1" (num gy), at "y2" (num gy), at "stroke" steelEdge, at "stroke-width" "0.8" ]
+        line [ at "x1" "9", at "x2" "29", at "y1" (num gy), at "y2" (num gy), at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
     neighbour y text =
       label
         [ at "x" "68", at "y" y, at "text-anchor" "middle", at "font-size" "5", at "font-family" sans
@@ -357,7 +432,7 @@ selector mode =
         (toLower (faderWord text))
   in
     g []
-      ( [ rect [ at "x" "8", at "y" "200", at "width" "22", at "height" "28", at "rx" "2.5", at "fill" "#c5cace", at "stroke" steelEdge, at "stroke-width" "0.8" ]
+      ( [ rect [ at "x" "8", at "y" "200", at "width" "22", at "height" "28", at "rx" "2.5", at "fill" k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
         , g [] (map groove (range 0 6))
         , rect [ at "x" "40", at "y" "200", at "width" "56", at "height" "28", at "rx" "2", at "fill" window ]
         , neighbour "206.5" before
@@ -405,6 +480,9 @@ fill = at "fill"
 front :: forall w. FrontInput -> HH.HTML w Action
 front v =
   let
+    k = lookOf v.night
+    -- how far along a scale of temperature a reading is
+    warmth low high c = clamp 0.0 1.0 ((c - low) / (high - low))
     phase = v.now * 2.0 - floor (v.now * 2.0)
     -- where the middle of the fader's cap sits over the slot
     capX = 60.5 + 279.0 * clamp 0.0 1.0 v.fader
@@ -460,51 +538,55 @@ front v =
             , fitted "alu" (textures <> "bushedAlum.png") 30.0 26.0 340.0 250.0
             , texture "wood" (textures <> "woodPanel01.png") 160.0
             , texture "stone" (textures <> "brutalistTexture.png") 200.0
+            , glow "dial-light" "#e88a22" 0.26
+            , glow "pool" "#ffe9c4" 0.75
+            , falling "beam" "#ffe9c4" 0.5 0.06
             ]
         ]
           -- the counter
           <> faced "stone" "#8b8a86" [ at "x" "0", at "y" "426", at "width" "400", at "height" "18", at "rx" "3" ]
+          <> (if v.night then [ rect [ at "x" "0", at "y" "426", at "width" "400", at "height" "18", at "rx" "3", fill "#000000", at "opacity" "0.72" ] ] else [])
           -- the steam turret: a steel barrel standing out of the right
           -- flank, with the steam valve's cedar knob on top
           <>
-            [ rect [ at "x" "364", at "y" "152", at "width" "28", at "height" "42", at "rx" "3", fill "#c5cace", at "stroke" steelEdge, at "stroke-width" "0.8" ]
-            , rect [ at "x" "376", at "y" "142", at "width" "6", at "height" "10", fill "#c5cace", at "stroke" steelEdge, at "stroke-width" "0.6" ]
+            [ rect [ at "x" "364", at "y" "152", at "width" "28", at "height" "42", at "rx" "3", fill k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
+            , rect [ at "x" "376", at "y" "142", at "width" "6", at "height" "10", fill k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.6" ]
             , rect [ at "x" "369", at "y" "130", at "width" "20", at "height" "13", at "rx" "2", fill "#1a110c" ]
             , rect [ at "x" "369", at "y" "130", at "width" "20", at "height" "13", at "rx" "2", fill "url(#wood)", at "opacity" "0.55" ]
             ]
           -- the body: a band of charred cedar across the top and a
           -- face of brushed steel under it
           <> faced "sugi" "#1a110c" [ at "x" "30", at "y" "26", at "width" "340", at "height" "250", at "rx" "8" ]
-          <> steel [ at "x" "30", at "y" "52", at "width" "340", at "height" "224", at "rx" "8" ]
-          <> steel [ at "x" "30", at "y" "52", at "width" "340", at "height" "12" ]
+          <> steel k [ at "x" "30", at "y" "52", at "width" "340", at "height" "224", at "rx" "8" ]
+          <> steel k [ at "x" "30", at "y" "52", at "width" "340", at "height" "12" ]
           <>
             [ line [ at "x1" "30", at "x2" "370", at "y1" "52", at "y2" "52", at "stroke" ink, at "stroke-width" "0.8" ]
             , rect
                 [ at "x" "30", at "y" "26", at "width" "340", at "height" "250", at "rx" "8", fill "none"
-                , at "stroke" (if faulted v.state then bad else "#55595d")
+                , at "stroke" (if faulted v.state then bad else if v.night then "#3a3632" else "#55595d")
                 , at "stroke-width" (if faulted v.state then "5" else "1")
                 ]
-            , dualGauge 104.0 128.0
+            , dualGauge k 104.0 128.0
                 { most: 12, labelEvery: 2, redFrom: 11.0, value: v.brewBar }
                 { most: 3, labelEvery: 1, redFrom: 2.3, value: v.steamBar }
             -- the machine's state: a dot and a word
             , circle [ at "cx" "196", at "cy" "79", at "r" "3", fill (stateColour v.state) ]
             , label
                 [ at "x" "204", at "y" "81.5", at "font-size" "7.5", at "font-family" sans
-                , at "letter-spacing" "0.5", fill ink
+                , at "letter-spacing" "0.5", fill k.lettering
                 ]
                 (stateText v.state)
-            , inkDisplay v.ink
-            , faderWindow v.faderValue
+            , inkDisplay k v.ink
+            , faderWindow k v.faderValue v.fader
             -- the three temperatures, one over the other
-            , readout 96.0 "reservoir" (num v.reservoirC)
-            , readout 119.0 "group" (num v.groupC)
-            , readout 142.0 "water" (num v.waterC)
+            , readout k 96.0 "reservoir" (num v.reservoirC) (warmth 20.0 110.0 v.reservoirC)
+            , readout k 119.0 "group" (num v.groupC) (warmth 20.0 100.0 v.groupC)
+            , readout k 142.0 "water" (num v.waterC) (warmth 20.0 100.0 v.waterC)
             -- the lamps, in a row
-            , lamp 200.0 172.0 "reservoir" v.brewElementOn orange
-            , lamp 240.0 172.0 "steam" v.steamElementOn orange
-            , lamp 280.0 172.0 "group" v.groupHeaterOn orange
-            , lamp 330.0 172.0 "problem" v.problem bad
+            , lamp k 200.0 172.0 "reservoir" v.brewElementOn orange
+            , lamp k 240.0 172.0 "steam" v.steamElementOn orange
+            , lamp k 280.0 172.0 "group" v.groupHeaterOn orange
+            , lamp k 330.0 172.0 "problem" v.problem bad
             -- the fader: a black strip across the front with a slot in
             -- it and a scale. The cap is the slider laid over this
             -- drawing by the page, so it can be taken in hand.
@@ -512,20 +594,31 @@ front v =
             , rect [ at "x" "56", at "y" "245", at "width" "288", at "height" "8", at "rx" "4", fill "#000000", at "stroke" "#3a3d40", at "stroke-width" "0.8" ]
             , rect
                 [ at "x" "58", at "y" "247.5", at "width" (num (max 0.0 (capX - 58.0))), at "height" "3", at "rx" "1.5"
-                , fill (if v.manual then orange else if v.running then paper else "#3a3d40")
+                , fill (if v.manual then orange else if v.running then k.lit v.fader else "#3a3d40")
                 ]
             , g [] (map mark (range 0 10))
-            , selector v.mode
+            , selector k v.mode
             ]
           -- The backsplash: board-marked concrete between two steel
           -- posts, so the stream and the cup are seen against something
           -- light.
           <> faced "wall" "#bcbcbe" [ at "x" "88", at "y" "276", at "width" "224", at "height" "124" ]
           <> [ rect [ at "x" "88", at "y" "276", at "width" "224", at "height" "8", fill "#000000", at "opacity" "0.2" ] ]
-          <> steel [ at "x" "84", at "y" "276", at "width" "5", at "height" "124" ]
-          <> steel [ at "x" "311", at "y" "276", at "width" "5", at "height" "124" ]
+          <>
+            -- By night the wall is in the dark, and a ring of light
+            -- hidden under the group, just above the cup, throws a
+            -- beam down onto the cup and a pool onto the tray.
+            ( if v.night then
+                [ rect [ at "x" "88", at "y" "276", at "width" "224", at "height" "124", fill "#000000", at "opacity" "0.84" ]
+                , path [ at "d" "M170,336 L230,336 L282,400 L118,400 Z", fill "url(#beam)" ]
+                , rect [ at "x" "118", at "y" "384", at "width" "164", at "height" "32", fill "url(#pool)" ]
+                ]
+              else []
+            )
+          <> steel k [ at "x" "84", at "y" "276", at "width" "5", at "height" "124" ]
+          <> steel k [ at "x" "311", at "y" "276", at "width" "5", at "height" "124" ]
           -- group and portafilter
-          <> steel [ at "x" "150", at "y" "276", at "width" "100", at "height" "22", at "rx" "2" ]
+          <> steel k [ at "x" "150", at "y" "276", at "width" "100", at "height" "22", at "rx" "2" ]
           <>
             -- The button on the group: it starts the profile, and stops
             -- a shot that is running.
@@ -544,25 +637,25 @@ front v =
           -- underside of a bottomless basket
           <> faced "wood" "#1a110c" [ at "x" "52", at "y" "312", at "width" "96", at "height" "14", at "rx" "7" ]
           <> [ rect [ at "x" "52", at "y" "312", at "width" "96", at "height" "14", at "rx" "7", fill "#120c08", at "opacity" "0.55" ] ]
-          <> steel [ at "x" "142", at "y" "298", at "width" "116", at "height" "13" ]
+          <> steel k [ at "x" "142", at "y" "298", at "width" "116", at "height" "13" ]
           <>
             [ rect [ at "x" "138", at "y" "311", at "width" "124", at "height" "17", at "rx" "2", fill ink ]
             , path [ at "d" "M148,328 L252,328 Q250,337 240,338 L160,338 Q150,337 148,328 Z", fill "#c9ced3", at "stroke" steelEdge, at "stroke-width" "1" ]
             -- the steam wand: out of the foot of the turret on a ball
             -- joint, swung forward and a little inward
-            , circle [ at "cx" "378", at "cy" "199", at "r" "8", fill "#c9ced3", at "stroke" steelEdge, at "stroke-width" "1" ]
+            , circle [ at "cx" "378", at "cy" "199", at "r" "8", fill k.metal, at "stroke" k.metalEdge, at "stroke-width" "1" ]
             , path
                 [ at "d" "M378,204 C377,250 372,300 369,348", fill "none"
-                , at "stroke" "#8b9197", at "stroke-width" "7", at "stroke-linecap" "round"
+                , at "stroke" (if v.night then "#2a2c2e" else "#8b9197"), at "stroke-width" "7", at "stroke-linecap" "round"
                 ]
             , path
                 [ at "d" "M378,204 C377,250 372,300 369,348", fill "none"
-                , at "stroke" "#e3e6e9", at "stroke-width" "4.6", at "stroke-linecap" "round"
+                , at "stroke" (if v.night then "#6f757b" else "#e3e6e9"), at "stroke-width" "4.6", at "stroke-linecap" "round"
                 ]
             , path [ at "d" "M365,346 L373,347 L372,358 L365.5,357 Z", fill ink ]
             ]
           -- drip tray, scale platform, cup
-          <> steel [ at "x" "80", at "y" "400", at "width" "240", at "height" "26", at "rx" "2" ]
+          <> steel k [ at "x" "80", at "y" "400", at "width" "240", at "height" "26", at "rx" "2" ]
           <>
             [ rect [ at "x" "80", at "y" "400", at "width" "240", at "height" "26", at "rx" "2", fill "none", at "stroke" steelEdge, at "stroke-width" "0.8" ]
             , rect [ at "x" "150", at "y" "394", at "width" "100", at "height" "6", fill "#c5cace", at "stroke" steelEdge, at "stroke-width" "0.6" ]

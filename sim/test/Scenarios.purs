@@ -5,10 +5,11 @@ module Test.Main (main) where
 
 import Prelude
 
-import Data.Array (drop, filter, last, length, replicate, take, zipWith)
+import Data.Array (drop, filter, last, length, range, replicate, take, zipWith)
 import Data.Array.NonEmpty (fromArray, head, toArray)
 import Data.Either (Either(..), isLeft, isRight)
-import Data.Foldable (and, foldl, for_, maximum)
+import Data.Foldable (all, and, foldl, for_, maximum)
+import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
 import Data.Number (abs)
 import Data.Number.Format (fixed, toStringWith)
@@ -32,6 +33,7 @@ import Sim.Plant (brewed)
 import Sim.Profiles as Profiles
 import Sim.Recipe as Recipe
 import Sim.Shapes as Shapes
+import Sim.Tint as Tint
 import Sim.Types (ClientKind(..), Curve(..), FaultKind(..), MachineState(..), PowerMode(..), Profile, ShotState(..), StepMode(..), defaultConfig)
 import Sim.World (World, dt, initialWorld, paramsOf, send, sensors, setParams, stepMany, stepWorld, warmUp, worldWith)
 
@@ -815,8 +817,25 @@ link = do
   expect "the same run of the link gives the same shot to the last digit"
     (map _.finalGrams rerun.machine.history == map _.finalGrams pulled.machine.history && rerun.clock == pulled.clock && map _.bar rerun.machine.trace == map _.bar first)
 
+-- | The colours of the night face.
+tints :: Effect Unit
+tints = do
+  log "Cool to warm"
+  let steps = map (\i -> Tint.coolToWarm (toNumber i / 10.0)) (range 0 10)
+  log ("  " <> joinWith " " steps)
+  expect "the ends are the two colours themselves" (Tint.coolToWarm 0.0 == Tint.cool && Tint.coolToWarm 1.0 == Tint.warm)
+  expect "a fraction outside 0 to 1 is held to the nearer end" (Tint.coolToWarm (-3.0) == Tint.cool && Tint.coolToWarm 7.0 == Tint.warm)
+  expect "a colour blended with itself is itself" (Tint.blend "#264a3a" "#264a3a" 0.37 == "#264a3a")
+  let lights = map Tint.lightness steps
+  let gaps = zipWith (\x y -> x - y) lights (drop 1 lights)
+  log ("  lightness falls from " <> n2 (Tint.lightness Tint.cool) <> " to " <> n2 (Tint.lightness Tint.warm))
+  expect "the lightness changes by the same amount at every step, to within the rounding of a colour to 8 bits"
+    (all (\gap -> abs (gap - (Tint.lightness Tint.cool - Tint.lightness Tint.warm) / 10.0) < 0.004) gaps)
+  expect "black is 0 and white is 1" (Tint.lightness "#000000" < 0.001 && abs (Tint.lightness "#ffffff" - 1.0) < 0.001)
+
 main :: Effect Unit
 main = do
+  tints
   coffeeMap
   beans
   character

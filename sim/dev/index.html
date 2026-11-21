@@ -185,6 +185,40 @@
       /* Drawings sit on the packet's paper in both themes. */
       .inside, .chart, .wheel { display: block; width: 100%; height: auto; background: #f4eedf; border: 2px solid var(--rule); }
       .inside { border-radius: 13px; }
+
+      /* Night. The drawings go dark with the rest of the page, each lit
+         from behind: the machine warm, the plumbing cool, the charts
+         warm again. The cool and warm are the two ends in Sim.Tint. */
+      .theme-night .machine { background-image: radial-gradient(ellipse at 50% 30%, rgba(232, 138, 34, 0.2), rgba(232, 138, 34, 0.05) 55%, #000000 80%); }
+      .theme-night .inside { background: #0c1211 radial-gradient(ellipse at 50% 45%, rgba(134, 201, 195, 0.2), rgba(134, 201, 195, 0.04) 60%, transparent 85%); border-color: #2a3d3a; }
+      .theme-night .chart { background: #120d08 radial-gradient(ellipse at 50% 55%, rgba(232, 138, 34, 0.13), rgba(232, 138, 34, 0.03) 65%, transparent 90%); border-color: #3d2c17; }
+      .theme-night .chart .grid { stroke: rgba(244, 238, 223, 0.12); }
+      .theme-night .chart .bar, .theme-night .chart .steam { stroke: #86c9c3; }
+      .theme-night .chart .flow { stroke: #9fbba6; }
+      .theme-night .chart .grams, .theme-night .chart .group { stroke: #f4eedf; }
+      .theme-night .chart .water, .theme-night .chart .reservoir { stroke: #e88a22; }
+      .theme-night .chart .target { stroke: #c9a24a; }
+      .theme-night .chart .band-name { fill: #f4eedf; }
+      .theme-night .chart .axis { fill: #b9b0a3; }
+      .theme-night .chart .goal { fill: #120d08; }
+      .theme-night .key.bar::before, .theme-night .key.steam::before { background: #86c9c3; }
+      .theme-night .key.flow::before { background: #9fbba6; }
+      .theme-night .key.water::before, .theme-night .key.reservoir::before { background: #e88a22; }
+      .theme-night .key.target::before { background: #c9a24a; }
+      /* The plumbing is drawn with its colours written into it
+         (Sim/View/Inside.purs). These pick out the ones that are dark
+         on paper, or are paper themselves, and turn them for the dark.
+         A colour changed there has to be changed here. */
+      .theme-night .inside text[fill="#3a3d42"], .theme-night .inside text[fill="#26282c"] { fill: #d9d3c4; }
+      .theme-night .inside text[fill="#7a1f12"] { fill: #ffb9a8; }
+      .theme-night .inside [fill="#f4eedf"] { fill: #0c1211; }
+      .theme-night .inside [stroke="#17120f"] { stroke: #d9d3c4; }
+      .theme-night .inside circle[fill="#17120f"] { fill: #d9d3c4; }
+      .theme-night .inside [fill="#f3d9d2"] { fill: #3b1a13; }
+      .theme-night .inside [fill="#eef0f2"] { fill: #172024; }
+      .theme-night .inside [fill="#a9cdf0"] { fill: #2b6190; }
+      .theme-night .inside [fill="#3a3d42"]:not(text) { fill: #8b9197; }
+      .theme-night .inside [stroke="#c5c8cc"] { stroke: #4a4f54; }
       .chart polyline { stroke-width: 2; vector-effect: non-scaling-stroke; }
       .chart .grid { stroke: rgba(23, 18, 15, 0.12); stroke-width: 1; }
       .chart .bar { stroke: #264a3a; }

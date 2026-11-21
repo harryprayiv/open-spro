@@ -15,6 +15,8 @@ module Sim.View.Svg
   , texture
   , fitted
   , sheen
+  , glow
+  , falling
   ) where
 
 import Prelude
@@ -108,4 +110,24 @@ sheen name =
     [ node "stop" [ at "offset" "0", at "stop-color" "#ffffff", at "stop-opacity" "0.45" ] []
     , node "stop" [ at "offset" "0.5", at "stop-color" "#ffffff", at "stop-opacity" "0" ] []
     , node "stop" [ at "offset" "1", at "stop-color" "#000000", at "stop-opacity" "0.28" ] []
+    ]
+-- | Light from a point, for use inside `defs`: the colour at the given
+-- | strength in the middle, fading to nothing at the edge of whatever
+-- | it fills.
+glow :: forall w i. String -> String -> Number -> HH.HTML w i
+glow name colour strength =
+  node "radialGradient"
+    [ at "id" name, at "cx" "0.5", at "cy" "0.5", at "r" "0.5" ]
+    [ node "stop" [ at "offset" "0", at "stop-color" colour, at "stop-opacity" (num strength) ] []
+    , node "stop" [ at "offset" "1", at "stop-color" colour, at "stop-opacity" "0" ] []
+    ]
+
+-- | Light falling from above, for use inside `defs`: the colour at one
+-- | strength at the top of whatever it fills and another at the bottom.
+falling :: forall w i. String -> String -> Number -> Number -> HH.HTML w i
+falling name colour top bottom =
+  node "linearGradient"
+    [ at "id" name, at "x1" "0", at "y1" "0", at "x2" "0", at "y2" "1" ]
+    [ node "stop" [ at "offset" "0", at "stop-color" colour, at "stop-opacity" (num top) ] []
+    , node "stop" [ at "offset" "1", at "stop-color" colour, at "stop-opacity" (num bottom) ] []
     ]

@@ -19,7 +19,7 @@ import Sim.Link (Event(..), FaderMode(..), faderScale)
 import Sim.Machine (Machine, silence)
 import Sim.Invariants (checks)
 import Sim.Layout (Edge(..), upright)
-import Sim.Model (Action(..), Field(..), State)
+import Sim.Model (Action(..), Field(..), State, Theme(..))
 import Sim.Problems (Problems, anyProblem)
 import Sim.Recipe (Recipe, Roast, roastLabel, roastNote, roasts, samples, targetGrams)
 import Sim.Types (ClientKind(..), FaultKind(..), PowerMode(..), Shot)
@@ -57,6 +57,7 @@ machineView st wrong =
             [ HH.div [ cls "fader-wrap" ]
             [ front
             { now: m.at
+            , night: st.theme == Night
             , state: c.state
             , brewBar: s.brewBar
             , steamBar: s.steamBar
