@@ -1,0 +1,84 @@
+# Builds the simulator and publishes it as the repository's GitHub
+# Pages site. The page is static: the controller core is already inside
+# the bundle as wasm, so nothing runs on a server.
+#
+# Before the first run, set Settings > Pages > Source to "GitHub
+# Actions" in the repository.
+name: demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sim/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/demo.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time. A newer push waits for the one in progress
+# and replaces any that is still queued.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The scenarios run first, so a simulator that fails them is not
+      # published.
+      - name: Test
+        working-directory: sim
+        run: nix develop ..#code --command spago test
+
+      - name: Bundle
+        working-directory: sim
+        run: nix develop ..#code --command spago bundle
+
+      # The page is sim/dev/index.html. It loads app.js from beside
+      # itself and its textures from ../imgs/textures, so the site keeps
+      # those two folders side by side. The front page sends a visitor
+      # on to dev/.
+      - name: Lay out the site
+        run: |
+          mkdir -p _site/dev _site/imgs/textures
+          cp sim/dev/index.html sim/dev/app.js _site/dev/
+          cp sim/imgs/textures/sugsugiBan.png _site/imgs/textures/
+          cp sim/imgs/textures/brutalistWall.png _site/imgs/textures/
+          cp sim/imgs/textures/bushedAlum.png _site/imgs/textures/
+          cp sim/imgs/textures/woodPanel01.png _site/imgs/textures/
+          cp sim/imgs/textures/brutalistTexture.png _site/imgs/textures/
+          printf '%s\n' \
+            '<!DOCTYPE html>' \
+            '<meta charset="utf-8">' \
+            '<title>Open-Spro simulator</title>' \
+            '<meta http-equiv="refresh" content="0; url=dev/">' \
+            '<a href="dev/">Open the simulator</a>' \
+            > _site/index.html
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
