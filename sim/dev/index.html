@@ -58,35 +58,59 @@
       .problems { margin: 0 0 0.5rem; padding: 0.5rem 0.8rem 0.5rem 1.7rem; background: #b3261e; color: #ffffff; font-weight: 700; font-size: 0.88rem; }
       .bad, .bad th, .bad td { color: var(--bad); font-weight: 700; }
 
-      /* Desk: the machine pane, the controls pane and, when it is out,
-         the bench pane. */
-      .desk { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 0.8rem; padding: 0.8rem; }
-      .desk.with-bench { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 0.9fr); }
-      .pane { min-height: 0; display: flex; flex-direction: column; background: var(--card); border: 2px solid var(--rule); }
+      /* Desk: the surface every window lies on. A window dragged past
+         its right or bottom edge makes it scroll. */
+      .desk { flex: 1; min-height: 0; position: relative; overflow: auto; }
       .pane-head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.6rem 0.8rem 0.5rem; border-bottom: 2px solid var(--rule); }
       /* Section labels number themselves, as the packet's pages do. */
       .pane-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0.4rem 0.9rem 0.9rem; counter-reset: label; }
-      }
 
-      /* Machine pane: the front beside the inside, the shot under both.
-         The drawings are the photo slots: rounded, and the only place
-         the textures appear. */
-      .machine-pane .pane-body { display: flex; flex-direction: column; }
-      /* The area the two drawings share. Each is a window in it, placed
-         and sized by the program: a title to drag it by, the drawing,
-         and a corner to resize it by. */
-      .views { flex: none; position: relative; height: var(--drawings, 380px); overflow: hidden; }
-      .win { position: absolute; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--card); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; z-index: 1; }
-      .win.in-front { z-index: 2; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28); }
+      /* A window: placed, sized and piled by the program, with a title
+         to drag it by and a grip on every side and corner. The
+         drawings are the photo slots, and the only place the textures
+         appear. */
+      .win { position: absolute; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--card); border: 2px solid var(--rule); border-radius: 9px; overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16); }
+      .win.in-front { box-shadow: 0 6px 22px rgba(0, 0, 0, 0.32); }
+      /* A window glides to a new place and size when Tidy sets them. In
+         the hand it follows the pointer at once. */
+      .win { transition: left 0.42s cubic-bezier(0.22, 1, 0.36, 1), top 0.42s cubic-bezier(0.22, 1, 0.36, 1), width 0.42s cubic-bezier(0.22, 1, 0.36, 1), height 0.42s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.2s ease; }
+      .desk.dragging .win { transition: none; }
+      /* A finger on a title or a grip drags the window and does not
+         scroll the page. */
+      .win-title, .win-grip { touch-action: none; }
+      @media (prefers-reduced-motion: reduce) { .win { transition: none; } }
       .win-title { flex: none; padding: 0.12rem 0.6rem; cursor: grab; user-select: none; -webkit-user-select: none; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.6rem; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); }
       .win-title:hover { color: var(--orange); }
-      .win-body { flex: 1; min-width: 0; min-height: 0; }
-      .win-body > * { width: 100%; height: 100%; }
-      .win-corner { position: absolute; right: 0; bottom: 0; width: 1rem; height: 1rem; cursor: nwse-resize; background: linear-gradient(135deg, transparent 50%, var(--line) 50%, var(--line) 62%, transparent 62%, transparent 74%, var(--line) 74%, var(--line) 86%, transparent 86%); }
-      .win-corner:hover { background: linear-gradient(135deg, transparent 50%, var(--orange) 50%, var(--orange) 62%, transparent 62%, transparent 74%, var(--orange) 74%, var(--orange) 86%, transparent 86%); }
-      .views .tidy { position: absolute; right: 0.3rem; bottom: 0.3rem; z-index: 0; padding: 0.1rem 0.5rem; font-size: 0.6rem; letter-spacing: 0.18em; text-transform: uppercase; }
+      .win-body { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+      .w-front .win-body > *, .w-inside .win-body > * { width: 100%; height: 100%; }
+      /* The shot's window scrolls when it is made too small to hold
+         the profile and the chart, and the chart takes what is left. */
+      .w-shot .win-body { overflow-y: auto; padding: 0.4rem 0.9rem 0.6rem; }
+      .win-mark { position: absolute; right: 0; bottom: 0; width: 1rem; height: 1rem; pointer-events: none; background: linear-gradient(135deg, transparent 50%, var(--line) 50%, var(--line) 62%, transparent 62%, transparent 74%, var(--line) 74%, var(--line) 86%, transparent 86%); }
+      .win-grip { position: absolute; z-index: 3; }
+      .win-grip:hover { background: color-mix(in srgb, var(--orange) 55%, transparent); }
+      .win-grip.n { left: 12px; right: 12px; top: 0; height: 5px; cursor: ns-resize; }
+      .win-grip.s { left: 12px; right: 12px; bottom: 0; height: 5px; cursor: ns-resize; }
+      .win-grip.w { top: 12px; bottom: 12px; left: 0; width: 5px; cursor: ew-resize; }
+      .win-grip.e { top: 12px; bottom: 12px; right: 0; width: 5px; cursor: ew-resize; }
+      .win-grip.nw { left: 0; top: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+      .win-grip.se { right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+      .win-grip.ne { right: 0; top: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+      .win-grip.sw { left: 0; bottom: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+      /* Under a finger the title and the grips are made big enough to
+         hit. */
+      @media (pointer: coarse) {
+        .win-title { padding: 0.6rem 0.8rem; font-size: 0.7rem; }
+        .win-grip.n, .win-grip.s { height: 12px; left: 28px; right: 28px; }
+        .win-grip.w, .win-grip.e { width: 12px; top: 28px; bottom: 28px; }
+        .win-grip.nw, .win-grip.ne, .win-grip.sw, .win-grip.se { width: 28px; height: 28px; }
+        .win-mark { width: 1.6rem; height: 1.6rem; }
+      }
       .desk.dragging.moving { cursor: grabbing; }
-      .desk.dragging.sizing { cursor: nwse-resize; }
+      .desk.dragging.sizing-n, .desk.dragging.sizing-s { cursor: ns-resize; }
+      .desk.dragging.sizing-w, .desk.dragging.sizing-e { cursor: ew-resize; }
+      .desk.dragging.sizing-nw, .desk.dragging.sizing-se { cursor: nwse-resize; }
+      .desk.dragging.sizing-ne, .desk.dragging.sizing-sw { cursor: nesw-resize; }
       /* The front is drawn as large as its cell allows, by whichever of
          the cell's width and height runs out first. The drawing is 400
          by 444 inside half a rem of padding. */
@@ -117,13 +141,16 @@
       .playhead-words .note { flex: 1; margin: 0.3rem 0; }
       /* The fader: a slider laid over the brass plate in the machine
          drawing. The drawing is 400 by 444 inside half a rem of padding,
-         and the plate's slot runs from 50 to 350 across and 236 to 262 down. */
+         and the plate's slot runs from 50 to 350 across and from 75.9 to
+         101.9 down. The strip sits 62 below a cedar band that ends where
+         the steel face, a golden rectangle 340 wide, begins; if that
+         changes in Sim/View/Front.purs this has to follow. */
       .fader-wrap { position: relative; width: 100%; max-width: 22rem; margin: 0 auto; }
       .fader-wrap .machine { max-width: none; }
       .fader-wrap .fader {
         position: absolute; margin: 0; cursor: grab;
         left: calc(0.5rem + (100% - 1rem) * 0.125); width: calc((100% - 1rem) * 0.75);
-        top: calc(0.5rem + (100% - 1rem) * 0.1396); height: calc((100% - 1rem) * 0.0586);
+        top: calc(0.5rem + (100% - 1rem) * 0.1709); height: calc((100% - 1rem) * 0.0586);
       }
       .fader-wrap .fader:active { cursor: grabbing; }
       .fader-wrap .fader.shows-only, .fader-wrap .fader.shows-only:active { cursor: not-allowed; }
@@ -174,7 +201,7 @@
          front. The slot is at 378, 152 in the drawing. */
       .lever { transform-origin: 378px 152px; transition: transform 0.38s cubic-bezier(0.5, 0, 0.3, 1.35); pointer-events: none; }
       .lever.pulled { transform: scaleY(-1); }
-      .machine-pane .chart:not(.timeline) { flex: none; height: var(--chart, 200px); }
+      .w-shot .chart:not(.timeline) { flex: 1 1 8rem; min-height: 5rem; }
       .machine {
         display: block; width: 100%; max-width: 22rem; margin: 0 auto; padding: 0.5rem; border-radius: 13px;
         background-color: #000000;
@@ -369,18 +396,7 @@
       .design-top { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 0.6rem; align-items: center; }
       .design-top .wheel { margin: 0; }
 
-      /* Pane widths come from dragging the gutters between them. */
-      .desk { grid-template-columns: minmax(12rem, 1fr) 0.5rem var(--controls, 35rem); gap: 0; }
-      .desk.with-bench { grid-template-columns: minmax(12rem, 1fr) 0.5rem var(--controls, 35rem) 0.5rem var(--bench, 26rem); }
-      .gutter { cursor: col-resize; background: linear-gradient(90deg, transparent 42%, var(--line) 42%, var(--line) 58%, transparent 58%); }
-      .gutter:hover, .desk.dragging .gutter { background: linear-gradient(90deg, transparent 30%, var(--orange) 30%, var(--orange) 70%, transparent 70%); }
-      .desk.dragging { cursor: col-resize; user-select: none; -webkit-user-select: none; }
-      /* An edge that lies flat, between two things one over the other. */
-      .gutter.flat { flex: none; height: 0.5rem; cursor: row-resize; background: linear-gradient(transparent 42%, var(--line) 42%, var(--line) 58%, transparent 58%); }
-      .gutter.flat:hover, .desk.dragging.flat .gutter.flat { background: linear-gradient(transparent 30%, var(--orange) 30%, var(--orange) 70%, transparent 70%); }
-      .desk.dragging.flat { cursor: row-resize; }
-      .desk.dragging.flat .gutter:not(.flat) { background: linear-gradient(90deg, transparent 42%, var(--line) 42%, var(--line) 58%, transparent 58%); }
-      .desk.dragging:not(.flat) .gutter.flat { background: linear-gradient(transparent 42%, var(--line) 42%, var(--line) 58%, transparent 58%); }
+      .desk.dragging { user-select: none; -webkit-user-select: none; }
       .phone-bar { display: none; }
 
       /* Inside: a valve's gate lies along the pipe when open and swings
@@ -388,26 +404,33 @@
       .gate .gate-blade { transform: rotate(90deg); transition: transform 0.45s cubic-bezier(0.3, 1.5, 0.5, 1); }
       .gate.open .gate-blade { transform: rotate(0deg); }
       .element.on { animation: glow 0.9s ease-in-out infinite alternate; }
+      /* Marks that run along a pipe with something moving through it,
+         in the direction the pipe is drawn. */
+      .inside .flow { stroke-dasharray: 2 12; opacity: 0.75; animation: flow 0.7s linear infinite; }
+      @keyframes flow { from { stroke-dashoffset: 14; } to { stroke-dashoffset: 0; } }
+      @media (prefers-reduced-motion: reduce) { .inside .flow { animation: none; } }
       @keyframes glow { from { stroke: #ff5a1f; stroke-width: 2.5; } to { stroke: #ffb347; stroke-width: 4; } }
 
-      /* Phone: one pane at a time, chosen from a bar at the bottom. The
-         top bar keeps only the state and the alarm. */
+      /* Phone: the windows stop floating. The bar at the bottom chooses
+         between the machine with its shot, the controls and the bench,
+         and each fills the page. The top bar keeps only the state and
+         the alarm. */
       @media (max-width: 48rem) {
         .page { height: 100dvh; min-height: 0; }
         .top { padding: 0.4rem 0.6rem 0.4rem 2.6rem; gap: 0.3rem 0.5rem; background-size: 1.5rem; background-position: 0.5rem center; padding-top: max(0.4rem, env(safe-area-inset-top)); }
         .plate, .top > .chip:nth-of-type(2), .top > .chip:nth-of-type(3), .top > button.active, .top > button:not(.alarm):not(.theme-switch) { display: none; }
-        .desk, .desk.with-bench { display: block; padding: 0.4rem; overflow: hidden; }
-        .gutter, .desk .pane { display: none; }
-        .desk.phone-0 .machine-pane, .desk.phone-1 .controls-pane, .desk.phone-2 .bench-pane { display: flex; height: 100%; }
+        .desk { display: flex; flex-direction: column; padding: 0.4rem; overflow-x: hidden; overflow-y: auto; }
+        .win { display: none; position: static; flex: none; width: auto !important; height: auto !important; border: 0; border-radius: 0; box-shadow: none; margin-bottom: 0.5rem; overflow: visible; }
+        .desk.phone-0 .w-front, .desk.phone-0 .w-inside, .desk.phone-0 .w-shot { display: flex; }
+        .desk.phone-1 .w-controls, .desk.phone-2 .w-bench { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+        .win-title, .win-mark, .win-grip { display: none; }
         .pane-body { overflow-y: auto; }
-        .views { height: auto; overflow: visible; }
-        .win { position: static; width: auto !important; height: auto !important; border: 0; margin-bottom: 0.5rem; }
-        .win-title, .win-corner, .views .tidy { display: none; }
+        .w-shot .win-body { overflow: visible; padding: 0; }
         .inside-cell { container-type: normal; }
         .front-cell { container-type: normal; }
         .front-cell .fader-wrap { width: 100%; max-width: 22rem; margin: 0 auto; }
         .inside-cell .inside { height: auto; }
-        .machine-pane .chart:not(.timeline) { height: auto; flex: 1; min-height: 6rem; }
+        .w-shot .chart:not(.timeline) { height: 12rem; flex: none; }
         .bean { grid-template-columns: 8rem 1fr; gap: 0.6rem; }
         .field { grid-template-columns: 5rem 1fr 3.8rem 2.6rem 2.8rem; gap: 0.35rem; }
         .design-top { grid-template-columns: 1fr; }

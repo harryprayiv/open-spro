@@ -24,14 +24,16 @@ import Data.Array (concat, mapWithIndex, range)
 import Data.Array as Array
 import Data.Int (toNumber)
 import Data.Int as Int
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Data.Number (abs, cos, floor, pi, sin)
 import Data.Number.Format (fixed, toStringWith)
 import Data.String (joinWith, toLower)
+import Data.String as String
 import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
+import Sim.Brand as Brand
 import Sim.Link (Event(..), FaderMode(..), faderWord, nextFaderMode)
 import Sim.Mascot (Mascot)
 import Sim.Mascot as Mascot
@@ -45,8 +47,7 @@ type FrontInput =
   { now :: Number
   -- Whether the page is in its night theme.
   , night :: Boolean
-  -- Whether play is arcade: eased lamps, and a display that can be
-  -- pressed. In realistic play neither.
+  -- Whether play is arcade, which eases the lamps.
   , arcade :: Boolean
   , state :: MachineState
   , brewBar :: Number
@@ -107,6 +108,11 @@ type Ink =
   , drawn :: Array { t :: Number, bar :: Number }
   -- the limits the fader is held to while the pressure is set by hand
   , limits :: Maybe { low :: Number, high :: Number }
+  -- what is about to be brewed: the beans, a line about them, and the
+  -- name of the profile
+  , bean :: String
+  , details :: String
+  , profile :: String
   }
 
 -- | The red of a limit: the arcs on the dial and the outline of a
@@ -195,6 +201,73 @@ lookOf night arcade =
 textures :: String
 textures = "../imgs/textures/"
 
+------------------------------------------------------------
+-- Proportions
+------------------------------------------------------------
+
+-- | The golden ratio. The machine's proportions are taken from it: a
+-- | length divided by `phi` gives the shorter side of a golden
+-- | rectangle, or the longer part of a line cut at its golden section.
+phi :: Number
+phi = 1.6180339887
+
+-- | The body is 340 wide and its foot is at 276. The steel face under
+-- | the cedar band is a golden rectangle of that width, which sets
+-- | where the band ends.
+bodyWide :: Number
+bodyWide = 340.0
+
+faceHigh :: Number
+faceHigh = bodyWide / phi
+
+faceTop :: Number
+faceTop = 276.0 - faceHigh
+
+-- | How far the fader strip and the row under it sit below where they
+-- | were first drawn, which was for a band ending at 52.
+lowered :: Number
+lowered = faceTop - 52.0
+
+-- | The dial's outer ring is as wide as the longer part of the face's
+-- | height cut at its golden section, and it is centred between the
+-- | row above it and the foot of the body.
+dialRadius :: Number
+dialRadius = faceHigh / phi / 2.0 - 3.0
+
+dialMiddle :: Number
+dialMiddle = (124.0 + lowered + 276.0) / 2.0
+
+-- | The backsplash is a golden rectangle on the height between the
+-- | body and the tray. The portafilter's ring is as wide as the
+-- | backsplash is high, and the group over it is narrower again by the
+-- | same ratio. The drip tray is the width of the body divided by
+-- | `phi`, and the two posts take what the tray has over the
+-- | backsplash.
+wallHigh :: Number
+wallHigh = 124.0
+
+wallWide :: Number
+wallWide = wallHigh * phi
+
+wallLeft :: Number
+wallLeft = 200.0 - wallWide / 2.0
+
+groupWide :: Number
+groupWide = wallHigh / phi
+
+trayWide :: Number
+trayWide = bodyWide / phi
+
+postWide :: Number
+postWide = (trayWide - wallWide) / 2.0
+
+-- | The e-ink screen is a golden rectangle 91 wide.
+screenWide :: Number
+screenWide = 91.0
+
+screenHigh :: Number
+screenHigh = screenWide / phi
+
 -- | A rectangle with a flat colour and the named texture over it.
 faced :: forall w i. String -> String -> Array Attr -> Array (HH.HTML w i)
 faced name fallback attrs =
@@ -229,7 +302,7 @@ type Scale = { most :: Int, labelEvery :: Int, redFrom :: Number, value :: Numbe
 dualGauge :: forall w i. Look -> Number -> Number -> Scale -> Scale -> HH.HTML w i
 dualGauge k cx cy brew steam =
   let
-    r = 58.0
+    r = dialRadius
     sweep scale v = -135.0 + 270.0 * clamp 0.0 1.0 (v / toNumber scale.most)
     arc radius scale =
       let
@@ -342,20 +415,30 @@ readout k y title value fraction =
         , at "font-family" sans, at "letter-spacing" "0.3", at "fill" k.label
         ]
         title
-    , rect [ at "x" "306", at "y" (num y), at "width" "48", at "height" "17", at "rx" "2", at "fill" window ]
+    -- the window is 17 high and phi squared times that wide
+    , rect [ at "x" "306", at "y" (num y), at "width" (num (17.0 * phi * phi)), at "height" "17", at "rx" "2", at "fill" window ]
     , label
-        [ at "x" "330", at "y" (num (y + 12.5)), at "text-anchor" "middle"
+        [ at "x" (num (306.0 + 17.0 * phi * phi / 2.0)), at "y" (num (y + 12.5)), at "text-anchor" "middle"
         , at "font-size" "10.5", at "font-family" "monospace", at "fill" (k.lit fraction)
         ]
         value
     ]
 
--- | The e-ink display: the shot as a timeline, in greys. Each step of
--- | the profile is a band, the step the shot is in is the darkest, the
+-- | The e-ink display, in greys. E-ink has no colour and holds its
+-- | picture with the power off.
+-- |
+-- | With the machine ready and no shot running it says what is about
+-- | to be brewed, laid out like the screen of an old music player: a
+-- | black bar along the top with the mark from `Sim.Brand`, the beans,
+-- | a line about them, the profile with how long it runs, and the
+-- | profile's shape along the bottom.
+-- |
+-- | While a shot runs the bar carries the profile's name and the time,
+-- | and the shot fills the rest as a timeline. Each step of the
+-- | profile is a band, the step the shot is in is the darkest, the
 -- | pressure the profile will ask for is a dashed line and the
 -- | pressure asked for so far is a solid black one. An upright line
--- | marks how far the shot has run. E-ink has no colour and holds its
--- | picture with the power off.
+-- | marks how far the shot has run.
 -- |
 -- | While the machine is asleep the display says so, with a slow
 -- | snore drawn on it, and pressing it wakes the machine for brewing
@@ -374,36 +457,57 @@ inkDisplay :: forall w. Look -> Number -> Ink -> HH.HTML w Action
 inkDisplay k now page =
   let
     left = 177.0
-    top = 145.0
-    width = 91.0
-    height = 52.0
+    top = 146.0
+    width = screenWide
+    height = screenHigh
     span = max 1.0 page.span
+    -- The screen is a golden rectangle and is composed by cutting it
+    -- at golden sections. The card's words take the longer part of
+    -- its height and the profile's shape the shorter part under them.
+    -- The words' part is cut again: the title bar is its height
+    -- divided by phi three times, and the rule between the beans and
+    -- the profile is at the golden section of what the bar leaves.
+    -- Across, the profile's row is cut at the golden section of the
+    -- width, which leaves a square on the left for the name.
+    wordsHigh = height / phi
+    titleHigh = wordsHigh / (phi * phi * phi)
+    ruleDown = titleHigh + (wordsHigh - titleHigh) / phi
+    cutAcross = width / phi
+    -- The two places the shot is plotted: the whole screen under the
+    -- bar while a shot runs, and the shorter part of the card before
+    -- one.
+    full = { top: top + titleHigh, height: height - titleHigh, head: 8.0, numbered: true }
+    strip = { top: top + wordsHigh, height: height - wordsHigh, head: 3.0, numbered: false }
     x t = left + clamp 0.0 1.0 (t / span) * width
-    y bar = top + height - clamp 0.0 12.0 bar / 12.0 * (height - 9.0)
+    y r pressure = r.top + r.height - clamp 0.0 12.0 pressure / 12.0 * (r.height - r.head)
     shade i
       | page.step == Just i = "#a9aaa4"
       | i `mod` 2 == 0 = "#d6d7d0"
       | otherwise = "#c4c5be"
-    band i seg =
+    band r i seg =
       [ rect
-          [ at "x" (num (x seg.start)), at "y" (num top)
-          , at "width" (num (max 0.0 (x seg.end - x seg.start))), at "height" (num height)
+          [ at "x" (num (x seg.start)), at "y" (num r.top)
+          , at "width" (num (max 0.0 (x seg.end - x seg.start))), at "height" (num r.height)
           , at "fill" (shade i)
           ]
-      , label
-          [ at "x" (num (x seg.start + 2.0)), at "y" (num (top + 6.5)), at "font-size" "5"
-          , at "font-family" sans, at "fill" "#55564f"
-          ]
-          (show (i + 1))
       ]
-    points samples = joinWith " " (map (\s -> num (x s.t) <> "," <> num (y s.bar)) samples)
-    limit bar =
+        <>
+          if r.numbered then
+            [ label
+                [ at "x" (num (x seg.start + 2.0)), at "y" (num (r.top + 6.2)), at "font-size" "5"
+                , at "font-family" sans, at "fill" "#55564f"
+                ]
+                (show (i + 1))
+            ]
+          else []
+    points r samples = joinWith " " (map (\s -> num (x s.t) <> "," <> num (y r s.bar)) samples)
+    limit r pressure =
       line
-        [ at "x1" (num left), at "x2" (num (left + width)), at "y1" (num (y bar)), at "y2" (num (y bar))
+        [ at "x1" (num left), at "x2" (num (left + width)), at "y1" (num (y r pressure)), at "y2" (num (y r pressure))
         , at "stroke" "#55564f", at "stroke-width" "0.6", at "stroke-dasharray" "1 2"
         ]
-    limits = case page.limits of
-      Just held -> [ limit held.low, limit held.high ]
+    limits r = case page.limits of
+      Just held -> [ limit r held.low, limit r held.high ]
       Nothing -> []
     middle = left + width / 2.0
     words size weight spacing colour down text =
@@ -484,7 +588,7 @@ inkDisplay k now page =
                 ]
             ]
       in
-        face <> bubble <> Array.mapWithIndex say lines <> (if k.arcade then [ wake ] else [])
+        face <> bubble <> Array.mapWithIndex say lines <> [ wake ]
     sleeping = case Mascot.asleep of
       Just mascot -> character mascot
       Nothing -> snoring
@@ -499,13 +603,10 @@ inkDisplay k now page =
       , z 3 12.0 27.5 "16"
       ]
         <>
-          ( if k.arcade then
-              [ words "4.6" "400" "0.4" "#1c1c1a" 48.5 "press here to wake the machine"
+          [ words "4.6" "400" "0.4" "#1c1c1a" 48.5 "press here to wake the machine"
               , underline 37.0
               , wake
               ]
-            else []
-          )
     remaining = case page.readyIn of
       Just seconds -> countdown seconds
       Nothing -> "--:--"
@@ -520,16 +621,13 @@ inkDisplay k now page =
           ("heating  " <> remaining)
       ]
         <>
-          ( if k.arcade then
-              [ label
+          [ label
                   [ at "x" (num (left + width - 3.0)), at "y" (num (top + height - 2.6)), at "text-anchor" "end", at "font-size" "4.8"
                   , at "font-family" sans, at "letter-spacing" "0.3", at "fill" "#e3e4dd", at "text-decoration" "underline"
                   ]
                   "press to skip"
               , press "Skip the wait. Only the simulator can do this." SkipWarmUp
               ]
-            else []
-          )
     warming =
       [ words "5" "400" "1.6" "#55564f" 11.0 "WARMING UP"
       , line
@@ -540,50 +638,161 @@ inkDisplay k now page =
       , words "4.6" "400" "0.4" "#55564f" 41.5 "until the machine is ready"
       ]
         <>
-          ( if k.arcade then
-              [ words "4.6" "400" "0.4" "#1c1c1a" 48.5 "press here to skip the wait"
+          [ words "4.6" "400" "0.4" "#1c1c1a" 48.5 "press here to skip the wait"
               , underline 30.0
               , press "Skip the warm-up. Only the simulator can do this." SkipWarmUp
               ]
-            else []
-          )
-    shotView =
-      concat (mapWithIndex band page.bands)
-        <> limits
+    -- The shot plotted in one of the two places.
+    curve r =
+      concat (mapWithIndex (band r) page.bands)
+        <> limits r
         <>
           [ polyline
-              [ at "fill" "none", at "points" (points page.target)
-              , at "stroke" "#6f706a", at "stroke-width" "0.9", at "stroke-dasharray" "2 1.5"
+              [ at "fill" "none", at "points" (points r page.target)
+              , at "stroke" "#6f706a", at "stroke-width" (if r.numbered then "0.9" else "0.7"), at "stroke-dasharray" "2 1.5"
               ]
           , polyline
-              [ at "fill" "none", at "points" (points page.drawn)
-              , at "stroke" "#1c1c1a", at "stroke-width" "1.4", at "stroke-linejoin" "round"
+              [ at "fill" "none", at "points" (points r page.drawn)
+              , at "stroke" "#1c1c1a", at "stroke-width" (if r.numbered then "1.4" else "1"), at "stroke-linejoin" "round"
               ]
           ]
-        <> playLine
         <>
-          [ label
-              [ at "x" (num (left + width - 2.0)), at "y" (num (top + height - 2.5)), at "text-anchor" "end"
-              , at "font-size" "5.5", at "font-family" sans, at "fill" "#1c1c1a"
-              ]
-              (toStringWith (fixed 0) (if page.running then page.place else span) <> " s")
-          ]
-    playLine =
-      if page.running then
-        [ line
-            [ at "x1" (num (x page.place)), at "x2" (num (x page.place)), at "y1" (num top), at "y2" (num (top + height))
-            , at "stroke" "#1c1c1a", at "stroke-width" "0.9"
+          if page.running then
+            [ line
+                [ at "x1" (num (x page.place)), at "x2" (num (x page.place)), at "y1" (num r.top), at "y2" (num (r.top + r.height))
+                , at "stroke" "#1c1c1a", at "stroke-width" "0.9"
+                ]
             ]
-        ]
+          else []
+    -- Words that would be wider than the room they have are squeezed
+    -- to fit it, letters and spaces together, so a long name is
+    -- narrower and never cut short. `each` is about how wide one
+    -- character is at the size the words are set in.
+    squeezed room each text =
+      if toNumber (String.length text) * each > room then
+        [ at "textLength" (num room), at "lengthAdjust" "spacingAndGlyphs" ]
       else []
+    -- A name in two lines of as near the same length as its spaces
+    -- allow, or in one if it has no space to break at.
+    halves text =
+      let
+        parts = String.split (String.Pattern " ") text
+        join = joinWith " "
+        uneven n =
+          let
+            over = String.length (join (Array.take n parts)) - String.length (join (Array.drop n parts))
+          in
+            if over < 0 then -over else over
+        best = Array.foldl (\a n -> if uneven n < uneven a then n else a) 1 (range 1 (max 1 (Array.length parts - 1)))
+      in
+        if Array.length parts < 2 then [ text ] else [ join (Array.take best parts), join (Array.drop best parts) ]
+    inSeconds n = toStringWith (fixed 0) n <> " s"
+    -- The bar along the top: the mark at the left, a few words after
+    -- it and a figure at the right, in white on black.
+    mark = case Brand.logo.picture of
+      Just file ->
+        [ picture (Mascot.address file) (left + 1.5) (top + 0.9) 13.0 (titleHigh - 1.8)
+            [ at "style" "filter: grayscale(1)" ]
+        ]
+      Nothing ->
+        [ label
+            [ at "x" (num (left + 2.5)), at "y" (num (top + 5.9)), at "font-size" "5.2", at "font-family" sans
+            , at "fill" "#e3e4dd"
+            ]
+            Brand.logo.mark
+        ]
+    titleBar fit middleWords figure =
+      [ rect [ at "x" (num left), at "y" (num top), at "width" (num width), at "height" (num titleHigh), at "fill" "#1c1c1a" ] ]
+        <> mark
+        <>
+          -- The words start clear of the mark and are cut short of the
+          -- figure.
+          [ label
+              ( [ at "x" (num (left + 18.5)), at "y" (num (top + 5.7)), at "font-size" "4.2"
+                , at "font-family" sans, at "letter-spacing" "0.7", at "fill" "#e3e4dd"
+                ]
+                  <> fit
+              )
+              middleWords
+          , label
+              [ at "x" (num (left + width - 2.5)), at "y" (num (top + 5.7)), at "text-anchor" "end", at "font-size" "4.4"
+              , at "font-family" sans, at "fill" "#e3e4dd"
+              ]
+              figure
+          ]
+    -- The baseline of the profile's row, in the middle of its part.
+    rowDown = (ruleDown + wordsHigh) / 2.0 + 1.8
+    -- The beans between the bar and the rule: the name, in one line if
+    -- it fits and in two smaller ones if it does not, and under it the
+    -- line about them.
+    centred down size weight colour each text =
+      label
+        ( [ at "x" (num middle), at "y" (num (top + down)), at "text-anchor" "middle", at "font-size" (num size)
+          , at "font-family" sans, at "font-weight" weight, at "fill" colour
+          ]
+            <> squeezed (width - 8.0) each text
+        )
+        text
+    beans =
+      if String.length page.bean <= 20 then
+        [ centred (titleHigh + 8.4) 7.2 "700" "#1c1c1a" 4.15 page.bean
+        , centred (ruleDown - 2.2) 4.2 "400" "#55564f" 2.3 page.details
+        ]
+      else
+        Array.mapWithIndex (\i text -> centred (titleHigh + 5.6 + 5.2 * toNumber i) 5.2 "700" "#1c1c1a" 3.0 text) (halves page.bean)
+          <> [ centred (ruleDown - 1.5) 3.7 "400" "#55564f" 2.05 page.details ]
+    -- With no shot running: what is about to be brewed. The beans in
+    -- the largest letters, a line about them, then the profile beside
+    -- a play mark with how long it runs, and its shape along the
+    -- bottom.
+    nowBrewing =
+      titleBar [] "NOW BREWING" ""
+        <> beans
+        <>
+          [ line
+              [ at "x1" (num (left + 5.0)), at "x2" (num (left + width - 5.0)), at "y1" (num (top + ruleDown)), at "y2" (num (top + ruleDown))
+              , at "stroke" "#8f908a", at "stroke-width" "0.4"
+              ]
+          , line
+              [ at "x1" (num (left + cutAcross)), at "x2" (num (left + cutAcross)), at "y1" (num (top + ruleDown + 2.2)), at "y2" (num (top + wordsHigh - 2.2))
+              , at "stroke" "#8f908a", at "stroke-width" "0.4"
+              ]
+          , path
+              [ at "d" ("M" <> num (left + 4.5) <> "," <> num (top + rowDown - 3.9) <> " l3.6,2.1 l-3.6,2.1 z")
+              , at "fill" "#1c1c1a"
+              ]
+          , label
+              ( [ at "x" (num (left + 10.5)), at "y" (num (top + rowDown)), at "font-size" "5", at "font-family" sans
+                , at "font-weight" "500", at "fill" "#1c1c1a"
+                ]
+                  <> squeezed (cutAcross - 13.0) 2.75 page.profile
+              )
+              page.profile
+          , label
+              [ at "x" (num (left + (cutAcross + width) / 2.0)), at "y" (num (top + rowDown)), at "text-anchor" "middle", at "font-size" "5"
+              , at "font-family" sans, at "fill" "#55564f"
+              ]
+              (inSeconds (maybe span _.end (Array.last page.bands)))
+          ]
+        <> curve strip
+    -- With a shot running: the profile's name and the time in the bar,
+    -- and the shot filling the rest.
+    brewing =
+      let
+        name = String.toUpper page.profile
+      in
+        titleBar (squeezed (width - 36.0) 3.25 name) name (inSeconds page.place) <> curve full
+    shotView = if page.running then brewing else nowBrewing
   in
     g []
-      ( [ rect [ at "x" "172", at "y" "140", at "width" "101", at "height" "62", at "rx" "3", at "fill" window ]
+      ( [ rect [ at "x" (num (left - 5.0)), at "y" (num (top - 5.0)), at "width" (num (width + 10.0)), at "height" (num (height + 10.0)), at "rx" "3", at "fill" window ]
         , rect [ at "x" (num left), at "y" (num top), at "width" (num width), at "height" (num height), at "fill" "#e3e4dd" ]
         ]
           <>
-            ( if page.asleep then sleeping
-              else if page.heating && not page.settled then warming
+            -- The sleeping and warming screens were set out for a
+            -- screen 52 high and are centred in this one.
+            ( if page.asleep then [ g [ at "transform" ("translate(0," <> num ((height - 52.0) / 2.0) <> ")") ] sleeping ]
+              else if page.heating && not page.settled then [ g [ at "transform" ("translate(0," <> num ((height - 52.0) / 2.0) <> ")") ] warming ]
               else if page.heating then shotView <> reheating
               else shotView
             )
@@ -598,13 +807,24 @@ inkDisplay k now page =
 -- | The window under the fader: the value the fader is
 -- | at. What the value is a value of is in the selector's window beside
 -- | it.
+drumWide :: Number
+drumWide = 28.0 * phi
+
+valueLeft :: Number
+valueLeft = 40.0 + drumWide + 8.0
+
+valueWide :: Number
+valueWide = 28.0 * phi * phi
+
 faderWindow :: forall w i. Look -> String -> Number -> HH.HTML w i
 faderWindow k value fraction =
   g []
-    [ rect [ at "x" "104", at "y" "96", at "width" "92", at "height" "28", at "rx" "2", at "fill" window ]
+    -- 28 high and phi squared times that wide, beside the selector's
+    -- window, which is 28 high and phi times that wide
+    [ rect [ at "x" (num valueLeft), at "y" (num (96.0 + lowered)), at "width" (num valueWide), at "height" "28", at "rx" "2", at "fill" window ]
     , label
-        [ at "x" "150", at "y" "116", at "text-anchor" "middle"
-        , at "font-size" "15", at "font-family" "monospace", at "fill" (k.lit fraction)
+        [ at "x" (num (valueLeft + valueWide / 2.0)), at "y" (num (116.0 + lowered)), at "text-anchor" "middle"
+        , at "font-size" "14", at "font-family" "monospace", at "fill" (k.lit fraction)
         ]
         value
     ]
@@ -621,30 +841,30 @@ selector k mode =
     before = nextFaderMode next
     groove i =
       let
-        gy = 99.5 + 3.5 * toNumber i
+        gy = 99.5 + lowered + 3.5 * toNumber i
       in
         line [ at "x1" "9", at "x2" "29", at "y1" (num gy), at "y2" (num gy), at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
     neighbour y text =
       label
-        [ at "x" "68", at "y" y, at "text-anchor" "middle", at "font-size" "5", at "font-family" sans
+        [ at "x" (num (40.0 + drumWide / 2.0)), at "y" (num (y + lowered)), at "text-anchor" "middle", at "font-size" "5", at "font-family" sans
         , at "letter-spacing" "0.5", at "fill" "#6c7176"
         ]
         (toLower (faderWord text))
   in
     g []
-      ( [ rect [ at "x" "8", at "y" "96", at "width" "22", at "height" "28", at "rx" "2.5", at "fill" k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
+      ( [ rect [ at "x" "8", at "y" (num (96.0 + lowered)), at "width" "22", at "height" "28", at "rx" "2.5", at "fill" k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
         , g [] (map groove (range 0 6))
-        , rect [ at "x" "40", at "y" "96", at "width" "56", at "height" "28", at "rx" "2", at "fill" window ]
-        , neighbour "102.5" before
+        , rect [ at "x" "40", at "y" (num (96.0 + lowered)), at "width" (num drumWide), at "height" "28", at "rx" "2", at "fill" window ]
+        , neighbour 102.5 before
         , label
-            [ at "x" "68", at "y" "113", at "text-anchor" "middle", at "font-size" "8", at "font-family" sans
+            [ at "x" (num (40.0 + drumWide / 2.0)), at "y" (num (113.0 + lowered)), at "text-anchor" "middle", at "font-size" "7.4", at "font-family" sans
             , at "letter-spacing" "0.6", at "fill" (if mode == OnTime then "#ff4d3d" else paper)
             ]
             (toLower (faderWord mode))
-        , neighbour "122" next
+        , neighbour 122.0 next
         , HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "rect")
-            [ HP.attr (AttrName "x") "4", HP.attr (AttrName "y") "92"
-            , HP.attr (AttrName "width") "96", HP.attr (AttrName "height") "36"
+            [ HP.attr (AttrName "x") "4", HP.attr (AttrName "y") (num (92.0 + lowered))
+            , HP.attr (AttrName "width") (num (40.0 + drumWide)), HP.attr (AttrName "height") "36"
             , HP.attr (AttrName "fill") "transparent"
             , HP.attr (AttrName "class") "fader-press"
             , HE.onClick \_ -> Send (FaderModeSelected next)
@@ -704,10 +924,10 @@ front v =
         mx = 60.5 + 27.9 * toNumber i
       in
         g []
-          ( [ line [ at "x1" (num mx), at "x2" (num mx), at "y1" "81", at "y2" (if i `mod` 5 == 0 then "86" else "84"), at "stroke" "#b9bec4", at "stroke-width" "0.8" ] ]
+          ( [ line [ at "x1" (num mx), at "x2" (num mx), at "y1" (num (81.0 + lowered)), at "y2" (num ((if i `mod` 5 == 0 then 86.0 else 84.0) + lowered)), at "stroke" "#b9bec4", at "stroke-width" "0.8" ] ]
               <>
                 if i `mod` 5 == 0 then
-                  [ label [ at "x" (num mx), at "y" "69", at "text-anchor" "middle", at "font-size" "6", at "font-family" sans, at "letter-spacing" "0.4", fill "#b9bec4" ] (reading i) ]
+                  [ label [ at "x" (num mx), at "y" (num (69.0 + lowered)), at "text-anchor" "middle", at "font-size" "6", at "font-family" sans, at "letter-spacing" "0.4", fill "#b9bec4" ] (reading i) ]
                 else []
           )
     fraction = clamp 0.0 1.0 (v.cupGrams / max 1.0 v.targetGrams)
@@ -728,6 +948,8 @@ front v =
     spread = 10.0 + 34.0 * thick
     sway = if phase < 0.5 then 0.0 else 0.5
     inset y = (394.0 - y) * 6.0 / 42.0
+    scaleWide = 16.0 * phi * phi
+    scaleLeft = wallLeft + wallWide - 4.0 - scaleWide
     paddle = "M138,316.5 L118,316 C100,315.5 88,309 68,309 C55,309 46,313.5 46,319.5 C46,325.5 55,330 68,330 C88,330 100,323.5 118,323 L138,322.5 Z"
     -- the top of the coffee, as far down as the crema reaches
     creamTo = top + min 14.0 ((392.0 - top) * 0.55)
@@ -860,7 +1082,7 @@ front v =
     svg [ at "viewBox" "0 0 400 444", at "class" "machine" ]
       ( [ defs
             [ fitted "sugi" (textures <> "sugsugiBan.png") 30.0 26.0 340.0 250.0
-            , fitted "wall" (textures <> "brutalistWall.png") 88.0 276.0 224.0 124.0
+            , fitted "wall" (textures <> "brutalistWall.png") wallLeft 276.0 wallWide wallHigh
             , fitted "alu" (textures <> "bushedAlum.png") 30.0 26.0 340.0 250.0
             , texture "wood" (textures <> "woodPanel01.png") 160.0
             , texture "stone" (textures <> "brutalistTexture.png") 200.0
@@ -876,7 +1098,7 @@ front v =
           -- the steam turret: a steel barrel standing out of the right
           -- flank, with the steam lever in a slot on top
           <>
-            [ rect [ at "x" "364", at "y" "152", at "width" "28", at "height" "42", at "rx" "3", fill k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
+            [ rect [ at "x" (num (378.0 - 21.0 / phi)), at "y" "152", at "width" (num (42.0 / phi)), at "height" "42", at "rx" "3", fill k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
             , rect [ at "x" "373", at "y" "149", at "width" "10", at "height" "5", at "rx" "1.5", fill ink ]
             -- The steam lever, as on a slot machine: an arm with a ball
             -- on the end. It stands up with the valve shut. Pulled, it
@@ -906,22 +1128,22 @@ front v =
           -- the body: a band of charred cedar across the top and a
           -- face of brushed steel under it
           <> faced "sugi" "#1a110c" [ at "x" "30", at "y" "26", at "width" "340", at "height" "250", at "rx" "8" ]
-          <> steel k [ at "x" "30", at "y" "52", at "width" "340", at "height" "224", at "rx" "8" ]
-          <> steel k [ at "x" "30", at "y" "52", at "width" "340", at "height" "12" ]
+          <> steel k [ at "x" "30", at "y" (num faceTop), at "width" "340", at "height" (num faceHigh), at "rx" "8" ]
+          <> steel k [ at "x" "30", at "y" (num faceTop), at "width" "340", at "height" "12" ]
           <>
-            [ line [ at "x1" "30", at "x2" "370", at "y1" "52", at "y2" "52", at "stroke" ink, at "stroke-width" "0.8" ]
+            [ line [ at "x1" "30", at "x2" "370", at "y1" (num faceTop), at "y2" (num faceTop), at "stroke" ink, at "stroke-width" "0.8" ]
             , rect
                 [ at "x" "30", at "y" "26", at "width" "340", at "height" "250", at "rx" "8", fill "none"
                 , at "stroke" (if faulted v.state then bad else if v.night then "#3a3632" else "#55595d")
                 , at "stroke-width" (if faulted v.state then "5" else "1")
                 ]
-            , dualGauge k 104.0 200.0
+            , dualGauge k 104.0 dialMiddle
                 { most: 12, labelEvery: 2, redFrom: 11.0, value: v.brewBar }
                 { most: 3, labelEvery: 1, redFrom: 2.3, value: v.steamBar }
             -- the machine's state: a dot and a word
-            , circle [ at "class" (led k true), at "cx" "214", at "cy" "110", at "r" "3", fill (stateColour v.state) ]
+            , circle [ at "class" (led k true), at "cx" (num (valueLeft + valueWide + 14.0)), at "cy" (num (110.0 + lowered)), at "r" "3", fill (stateColour v.state) ]
             , label
-                [ at "x" "222", at "y" "112.5", at "font-size" "7.5", at "font-family" sans
+                [ at "x" (num (valueLeft + valueWide + 22.0)), at "y" (num (112.5 + lowered)), at "font-size" "7.5", at "font-family" sans
                 , at "letter-spacing" "0.5", fill k.lettering
                 ]
                 (stateText v.state)
@@ -942,10 +1164,10 @@ front v =
             -- over this drawing by the page, so it can be taken in
             -- hand. The stylesheet places that slider and has to agree
             -- with where the strip is drawn.
-            , rect [ at "x" "46", at "y" "60", at "width" "308", at "height" "30", at "rx" "3", fill window ]
-            , rect [ at "x" "56", at "y" "71", at "width" "288", at "height" "8", at "rx" "4", fill "#000000", at "stroke" "#3a3d40", at "stroke-width" "0.8" ]
+            , rect [ at "x" "46", at "y" (num (60.0 + lowered)), at "width" "308", at "height" "30", at "rx" "3", fill window ]
+            , rect [ at "x" "56", at "y" (num (71.0 + lowered)), at "width" "288", at "height" "8", at "rx" "4", fill "#000000", at "stroke" "#3a3d40", at "stroke-width" "0.8" ]
             , rect
-                [ at "x" "58", at "y" "73.5", at "width" (num (max 0.0 (capX - 58.0))), at "height" "3", at "rx" "1.5"
+                [ at "x" "58", at "y" (num (73.5 + lowered)), at "width" (num (max 0.0 (capX - 58.0))), at "height" "3", at "rx" "1.5"
                 , fill (if v.manual then leds.byHand else if v.running then k.lit v.fader else "#3a3d40")
                 ]
             , g [] (map mark (range 0 10))
@@ -954,14 +1176,14 @@ front v =
           -- The backsplash: board-marked concrete between two steel
           -- posts, so the stream and the cup are seen against something
           -- light.
-          <> faced "wall" "#bcbcbe" [ at "x" "88", at "y" "276", at "width" "224", at "height" "124" ]
-          <> [ rect [ at "x" "88", at "y" "276", at "width" "224", at "height" "8", fill "#000000", at "opacity" "0.2" ] ]
+          <> faced "wall" "#bcbcbe" [ at "x" (num wallLeft), at "y" "276", at "width" (num wallWide), at "height" (num wallHigh) ]
+          <> [ rect [ at "x" (num wallLeft), at "y" "276", at "width" (num wallWide), at "height" "8", fill "#000000", at "opacity" "0.2" ] ]
           <>
             -- By night the wall is in the dark, and a ring of light
             -- hidden under the group, just above the cup, throws a
             -- beam down onto the cup and a pool onto the tray.
             ( if v.night then
-                [ rect [ at "x" "88", at "y" "276", at "width" "224", at "height" "124", fill "#000000", at "opacity" "0.84" ]
+                [ rect [ at "x" (num wallLeft), at "y" "276", at "width" (num wallWide), at "height" (num wallHigh), fill "#000000", at "opacity" "0.84" ]
                 , path [ at "d" "M170,336 L230,336 L282,400 L118,400 Z", fill "url(#beam)" ]
                 , rect [ at "x" "118", at "y" "384", at "width" "164", at "height" "32", fill "url(#pool)" ]
                 ]
@@ -970,22 +1192,24 @@ front v =
           <>
             -- The scale's display, up on the backsplash and clear of
             -- the tray, where water goes.
-            [ rect [ at "x" "257", at "y" "280.5", at "width" "50", at "height" "16", at "rx" "2", fill window, at "stroke" "#3a3d40", at "stroke-width" "0.6" ]
+            -- 16 high and phi squared times that wide, against the
+            -- wall's right edge
+            [ rect [ at "x" (num scaleLeft), at "y" "280.5", at "width" (num scaleWide), at "height" "16", at "rx" "2", fill window, at "stroke" "#3a3d40", at "stroke-width" "0.6" ]
             , label
-                [ at "x" "282", at "y" "292.3", at "text-anchor" "middle", at "font-size" "10"
+                [ at "x" (num (scaleLeft + scaleWide / 2.0)), at "y" "291.8", at "text-anchor" "middle", at "font-size" "8.6"
                 , at "font-family" "monospace", fill (k.lit (clamp 0.0 1.0 (v.cupGrams / max 1.0 v.targetGrams)))
                 ]
                 (num v.cupGrams <> " g")
             ]
-          <> steel k [ at "x" "84", at "y" "276", at "width" "5", at "height" "124" ]
-          <> steel k [ at "x" "311", at "y" "276", at "width" "5", at "height" "124" ]
+          <> steel k [ at "x" (num (wallLeft - postWide)), at "y" "276", at "width" (num postWide), at "height" (num wallHigh) ]
+          <> steel k [ at "x" (num (wallLeft + wallWide)), at "y" "276", at "width" (num postWide), at "height" (num wallHigh) ]
           -- group and portafilter
-          <> steel k [ at "x" "150", at "y" "276", at "width" "100", at "height" "22", at "rx" "2" ]
+          <> steel k [ at "x" (num (200.0 - groupWide / 2.0)), at "y" "276", at "width" (num groupWide), at "height" "22", at "rx" "2" ]
           <>
             -- The button on the group: it starts the profile, and stops
             -- a shot that is running. It is a plain steel button with
             -- no light in it.
-            [ rect [ at "x" "150", at "y" "276", at "width" "100", at "height" "22", at "rx" "2", fill "none", at "stroke" steelEdge, at "stroke-width" "0.8" ]
+            [ rect [ at "x" (num (200.0 - groupWide / 2.0)), at "y" "276", at "width" (num groupWide), at "height" "22", at "rx" "2", fill "none", at "stroke" steelEdge, at "stroke-width" "0.8" ]
             , circle [ at "cx" "200", at "cy" "287", at "r" "7.5", fill k.metalEdge ]
             , circle [ at "cx" "200", at "cy" "287", at "r" "6.2", fill k.metal ]
             , circle [ at "cx" "200", at "cy" "287", at "r" "4.2", fill "none", at "stroke" k.metalEdge, at "stroke-width" "0.5" ]
@@ -1038,9 +1262,9 @@ front v =
             , path [ at "d" "M365,346 L373,347 L372,358 L365.5,357 Z", fill ink ]
             ]
           -- drip tray, scale platform, cup
-          <> steel k [ at "x" "80", at "y" "400", at "width" "240", at "height" "26", at "rx" "2" ]
+          <> steel k [ at "x" (num (200.0 - trayWide / 2.0)), at "y" "400", at "width" (num trayWide), at "height" "26", at "rx" "2" ]
           <>
-            [ rect [ at "x" "80", at "y" "400", at "width" "240", at "height" "26", at "rx" "2", fill "none", at "stroke" steelEdge, at "stroke-width" "0.8" ]
+            [ rect [ at "x" (num (200.0 - trayWide / 2.0)), at "y" "400", at "width" (num trayWide), at "height" "26", at "rx" "2", fill "none", at "stroke" steelEdge, at "stroke-width" "0.8" ]
             , rect [ at "x" "150", at "y" "394", at "width" "100", at "height" "6", fill "#c5cace", at "stroke" steelEdge, at "stroke-width" "0.6" ]
             , path [ at "d" "M172,352 L228,352 L222,394 L178,394 Z", fill "#f4f1ea", at "stroke" "#8a8378", at "stroke-width" "1.5" ]
             , path [ at "d" coffee, fill "#4a2d18" ]

@@ -29,12 +29,12 @@ import Sim.Link (Event(..), FaderMode(..), eventLabel)
 import Sim.Machine (Machine, Outcome(..))
 import Sim.Machine as Machine
 import Sim.Params as Params
-import Sim.Plant (brewed)
+import Sim.Plant (Plant, brewed, noDisturbance, readSensors, steamSafetyValveBar, stepPlant)
 import Sim.Profiles as Profiles
 import Sim.Recipe as Recipe
 import Sim.Shapes as Shapes
 import Sim.Tint as Tint
-import Sim.Types (ClientKind(..), Curve(..), FaultKind(..), MachineState(..), PowerMode(..), Profile, ShotState(..), StepMode(..), defaultConfig)
+import Sim.Types (ClientKind(..), Curve(..), FaultKind(..), GroupValve(..), MachineState(..), PowerMode(..), Profile, PumpMode(..), ShotState(..), StepMode(..), TwoWay(..), defaultConfig)
 import Sim.World (World, dt, initialWorld, paramsOf, send, sensors, setParams, stepMany, stepWorld, warmUp, worldWith)
 
 n1 :: Number -> String
@@ -141,6 +141,45 @@ inletLoss w0 = do
   let w3 = runUntil 30.0 (\w -> w.ctl.state == Faulted) w2 { dist = w2.dist { inletOpen = false } }
   expect "aborts with no_inlet_pressure" (map _.kind w3.ctl.faults == [ NoInletPressure ])
   expect "no invariant broken" (w3.violations == [])
+
+-- | The mechanical valves act with no controller at all. Here nothing
+-- | reads a sensor or decides anything: the outputs are held where a
+-- | failed controller could leave them, and the plant is run on its
+-- | own.
+mechanicalRelief :: World -> Effect Unit
+mechanicalRelief w = do
+  log "Mechanical relief, with the controller out of the loop"
+  let
+    k = (paramsOf w).plant
+    stuck = w.ctl.act { heatEnabled = true, steamElementOn = true, brewElementOn = false }
+    run :: Int -> Number -> Plant -> Number
+    run steps most plant
+      | steps <= 0 = most
+      | otherwise =
+          let
+            next = stepPlant dt noDisturbance stuck plant
+          in
+            run (steps - 1) (max most (readSensors noDisturbance next).steamBar) next
+    -- two hours with the steam element stuck on
+    peak = run 288000 0.0 w.plant
+  log ("  steam element stuck on for two hours: peak " <> n2 peak <> " bar")
+  expect "the steam safety valve holds the boiler near its set pressure" (peak > steamSafetyValveBar - 0.05 && peak < steamSafetyValveBar + 0.2)
+  expect "the firmware's steam limit is under the safety valve" (w.ctl.cfg.steamLimitBar < steamSafetyValveBar)
+  expect "the firmware's brew pressure limit is under the expansion valve" (w.ctl.cfg.brewPressureLimitBar < k.expansionValveBar)
+  let
+    -- the pump flat out against a shut group: nowhere for the water to go
+    deadHead = w.ctl.act { pump = PressureControl, pumpSpeed = 1.0, bypassValve = Closed, groupValve = ToDrain }
+    press :: Int -> Number -> Plant -> Number
+    press steps most plant
+      | steps <= 0 = most
+      | otherwise =
+          let
+            next = stepPlant dt noDisturbance deadHead plant
+          in
+            press (steps - 1) (max most next.brewBar) next
+    brewPeak = press 2400 0.0 w.plant
+  log ("  pump flat out for a minute: peak " <> n2 brewPeak <> " bar")
+  expect "the expansion valve caps the brew pressure" (brewPeak <= k.expansionValveBar + 0.001)
 
 steaming :: World -> Effect Unit
 steaming w0 = do
@@ -864,6 +903,7 @@ main = do
   coldBranchFailure warm
   inletLoss warm
   steaming warm
+  mechanicalRelief warm
   rampIsFollowed warm
   preInfusion warm
   controllerCore warm

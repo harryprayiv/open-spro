@@ -15,6 +15,7 @@ module Sim.Plant
   , Brewed
   , brewed
   , warmPlant
+  , steamSafetyValveBar
   ) where
 
 import Prelude
@@ -277,6 +278,14 @@ saturationGaugeBar tC =
   in
     max 0.0 (mmHg / 750.06 - 1.013)
 
+-- | The pressure at which the steam boiler's safety valve SRV_STM
+-- | lifts. It is a certified mechanical part, bought set and never
+-- | adjusted, so it is fixed here and is not among the parameters that
+-- | can be changed. It acts on the boiler whatever the controller is
+-- | doing.
+steamSafetyValveBar :: Number
+steamSafetyValveBar = 2.5
+
 stepPlant :: Number -> Disturbance -> Actuators -> Plant -> Plant
 stepPlant dt d a p =
   let
@@ -413,9 +422,15 @@ stepPlant dt d a p =
     -- steam boiler
     steamBarNow = saturationGaugeBar p.steamC
     steamPowerW = if a.heatEnabled && a.steamElementOn then k.steamElementW else 0.0
-    drawGPerS =
+    wandGPerS =
       if d.steamValveOpen && steamBarNow > 0.2 then k.steamDrawGPerS * steamBarNow / 1.8
       else 0.0
+    -- Over its set pressure the safety valve lifts and vents steam to
+    -- the drip tray, far faster than the element can make it, which
+    -- carries the heat away and holds the pressure near the set
+    -- point. The controller has no part in this.
+    ventGPerS = 60.0 * max 0.0 (steamBarNow - steamSafetyValveBar)
+    drawGPerS = wandGPerS + ventGPerS
     fillMlPerS =
       if a.fillValve == Open then max 0.0 (lineBar - steamBarNow) * k.steamFillMlPerSBar
       else 0.0

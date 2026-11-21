@@ -18,6 +18,16 @@
 -- the expansion valve EXP, the steam safety valve SRV_STM, the vacuum
 -- breaker VB, the thermal cutoffs, the manual steam valve, the needle
 -- valve NV_PRE setting and the drain ball valves.
+--
+-- Two of those bear on the firmware all the same. EXP caps the brew
+-- side, which is everything from the pump to the group valve, and
+-- SRV_STM caps the steam boiler. The group itself is open to the drain
+-- through SV_GRP whenever no shot is running, so it cannot be shut in
+-- under pressure. The firmware's own limits have to sit under the
+-- pressures those two valves lift at, so that the firmware faults and
+-- shuts down first and the valves are left as the last resort. Their
+-- settings are recorded in the configuration for that one purpose, and
+-- invariant FirmwareTripsBeforeTheValves states the ordering.
 
 ------------------------------------------------------------
 -- Vocabulary
@@ -96,6 +106,12 @@ config {
     group_limit_c: Decimal = 110.0
     steam_limit_bar: Decimal = 2.3
     brew_pressure_limit_bar: Decimal = 11.0
+    -- What the two mechanical valves are set to. The firmware cannot
+    -- change these and is never sent them: they are properties of the
+    -- parts fitted, written here so the limits above can be checked
+    -- against them.
+    expansion_valve_bar: Decimal = 12.0
+    steam_safety_valve_bar: Decimal = 2.5
 
     min_inlet_bar: Decimal = 1.5
     max_inlet_conductivity_us: Decimal = 250.0
@@ -925,6 +941,14 @@ invariant PressureSetpointUnderLimit {
     for m in Machines:
         m.pressure_target_bar != null implies
             m.pressure_target_bar <= config.brew_pressure_limit_bar - config.pressure_headroom_bar
+}
+
+-- The firmware gives up before the mechanical valves have to act.
+invariant FirmwareTripsBeforeTheValves {
+    for m in Machines:
+        config.brew_pressure_limit_bar < config.expansion_valve_bar
+        and config.steam_limit_bar < config.steam_safety_valve_bar
+        and config.steam_target_bar < config.steam_limit_bar
 }
 
 invariant PumpAndBypassExclusive {

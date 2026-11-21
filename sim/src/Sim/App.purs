@@ -1,5 +1,5 @@
--- | The page: a machine pane, a controls pane and a bench pane that can
--- | be put away. The page holds no machine. It sends requests to one,
+-- | The page: a desk of windows for the front of the machine, its
+-- | inside, the shot, the controls and a bench that can be put away. The page holds no machine. It sends requests to one,
 -- | hears its reports and answers some time later, and shows what it
 -- | last heard. Here the machine at the far end is a simulated one. The view, the theme, saved
 -- | recipes, the user's profile shapes and every parameter are
@@ -11,9 +11,10 @@ import Prelude
 
 import Control.Monad.Rec.Class (forever)
 import Data.Array (filter, length, snoc)
+import Data.Array as Array
 import Data.Array.NonEmpty as NEA
 import Data.Int (toNumber)
-import Data.Maybe (Maybe(..), isJust, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Number as Number
 import Data.String (Pattern(..), joinWith, split, trim)
 import Data.Time.Duration (Milliseconds(..))
@@ -26,7 +27,7 @@ import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
 import Sim.Backend as Backend
 import Sim.Machine as Machine
-import Sim.Layout (BenchTab(..), Edge(..), Tab(..), benchTabs, benchTitle, defaultSizes, defaultView, tabTitle, tabs)
+import Sim.Layout (BenchTab(..), Sizes, Tab(..), Window(..), benchTabs, benchTitle, defaultSizes, defaultView, tabTitle, tabs)
 import Sim.Layout as Layout
 import Sim.Palette as Palette
 import Sim.Forecast (forecast)
@@ -41,10 +42,14 @@ import Sim.Shapes as Shapes
 import Sim.Store as Store
 import Sim.Update (applyRecipe, defaultLocks, dragFader, dropFader, refreshForecast, request, reset, sim, simView, skipWarmUp, tick)
 import Sim.View.Bench (designer, scope, settings)
-import Sim.View.Panels (brew, cup, faults, machineView, readings)
+import Sim.View.Panels (brew, cup, faults, frontView, insideView, readings, shotView, window)
 import Sim.View.Widgets (chosen, cls, clock, segmented)
-import Web.Event.Event (preventDefault)
+import Effect (Effect)
+import Web.Event.Event (EventType(..), preventDefault)
+import Web.HTML as Web
+import Web.HTML.Window (innerHeight, innerWidth)
 import Web.UIEvent.MouseEvent (clientX, clientY, toEvent)
+import Web.UIEvent.MouseEvent as MouseEvent
 
 recipesKey :: String
 recipesKey = "espresso-sim.recipes"
@@ -69,6 +74,22 @@ defaultRecipe = Recipe.house
 
 sizesKey :: String
 sizesKey = "espresso-sim.sizes"
+
+-- | The windows that are out, fitted to the page as it is now. The
+-- | bench is fitted in only while it is out.
+fittedToPage :: State -> Effect Sizes
+fittedToPage st = do
+  page <- pageSize
+  let shown = filter (\window -> window /= BenchWindow || st.view.benchOpen) Layout.windows
+  pure (Layout.tiled page.wide page.high shown st.sizes)
+
+-- | How big the page is now, in pixels.
+pageSize :: Effect { wide :: Number, high :: Number }
+pageSize = do
+  page <- Web.window
+  wide <- innerWidth page
+  high <- innerHeight page
+  pure { wide: toNumber wide, high: toNumber high }
 
 locksKey :: String
 locksKey = "espresso-sim.locks"
@@ -146,6 +167,7 @@ handleAction = case _ of
     params <- H.liftEffect (Store.load paramsKey)
     locks <- H.liftEffect (Store.load locksKey)
     sizes <- H.liftEffect (Store.load sizesKey)
+    page <- H.liftEffect pageSize
     let stored = maybe Params.defaults Params.decode params
     H.modify_ \st -> refreshForecast $ applyRecipe st.recipe st
       { saved = maybe [] Recipe.decode recipes
@@ -153,7 +175,7 @@ handleAction = case _ of
       , theme = if theme == Just "night" then Night else Day
       , play = if play == Just "realistic" then Realistic else Arcade
       , shapes = maybe [] Shapes.decode shapes
-      , sizes = maybe defaultSizes Layout.decodeSizes sizes
+      , sizes = fromMaybe (Layout.arranged page.wide page.high) (sizes >>= Layout.decodeSizes)
       , locks = maybe defaultLocks (filter (_ /= "") <<< split (Pattern ",")) locks
       , params = stored
       , backend = Backend.create stored
@@ -233,17 +255,29 @@ handleAction = case _ of
           sizes = Layout.dragEdge d.edge (toNumber (x - d.x)) (toNumber (y - d.y)) st.sizes
         in
           H.modify_ _ { sizes = sizes, drag = Just d { x = x, y = y } }
-  TidyWindows -> do
+  RaiseWindow which -> do
     st <- H.get
-    let sizes = Layout.tidied st.sizes
-    H.liftEffect (Store.save sizesKey (Layout.encodeSizes sizes))
-    H.modify_ _ { sizes = sizes }
-
+    when (Array.last st.sizes.order /= Just which) do
+      let sizes = Layout.raised which st.sizes
+      H.liftEffect (Store.save sizesKey (Layout.encodeSizes sizes))
+      H.modify_ _ { sizes = sizes }
   GutterUp -> do
     st <- H.get
     when (isJust st.drag) do
-      H.liftEffect (Store.save sizesKey (Layout.encodeSizes st.sizes))
-      H.modify_ _ { drag = Nothing }
+      -- Let go, the windows are fitted to the page where they are, so
+      -- that none lies over another. The stylesheet glides them there.
+      sizes <- H.liftEffect (fittedToPage st)
+      H.liftEffect (Store.save sizesKey (Layout.encodeSizes sizes))
+      H.modify_ _ { drag = Nothing, sizes = sizes }
+  -- The bench taken out or put away: it comes out on top, and the
+  -- windows are fitted again round it or without it.
+  SetBench open tab -> do
+    H.modify_ \st -> st { view = st.view { benchOpen = open, benchTab = fromMaybe st.view.benchTab tab }, sizes = Layout.raised BenchWindow st.sizes }
+    st <- H.get
+    sizes <- H.liftEffect (fittedToPage st)
+    H.liftEffect (Store.save viewKey (Layout.encode st.view))
+    H.liftEffect (Store.save sizesKey (Layout.encodeSizes sizes))
+    H.modify_ _ { sizes = sizes }
 
 -- | Shown only on a narrow screen: one pane at a time, chosen here.
 phoneBar :: forall m. State -> H.ComponentHTML Action () m
@@ -285,17 +319,18 @@ render st =
               HH.button
                 [ cls "alarm"
                 , HP.title "Show the problems"
-                , HE.onClick \_ -> Change _ { view = st.view { benchOpen = true, benchTab = Faults } }
+                , HE.onClick \_ -> SetBench true (Just Faults)
                 ]
                 [ HH.text (show count <> (if count == 1 then " problem" else " problems")) ]
             else HH.text ""
           , HH.span [ cls "notice" ] [ HH.text st.notice ]
-          , chosen open "Bench" (Change _ { view = st.view { benchOpen = not open } })
+          -- The bench comes out on top of the pile, where it can be seen.
+          , chosen open "Bench" (SetBench (not open) Nothing)
           , HH.button
               [ cls ("play-switch" <> (if st.play == Realistic then " realistic" else ""))
               , HP.title
-                  ( if st.play == Realistic then "Realistic: nothing smoothed, nothing a real machine could not do. Click for arcade."
-                    else "Arcade: eased lamps, a display that can be pressed, a warm-up that can be skipped. Click for realistic."
+                  ( if st.play == Realistic then "Realistic: the lamps follow their outputs exactly. Click for arcade."
+                    else "Arcade: the lamps glow and fade. Click for realistic."
                   )
               , HE.onClick \_ -> TogglePlay
               ]
@@ -311,16 +346,17 @@ render st =
               ]
           ]
       , HH.div
-          [ cls ("desk phone-" <> show st.phone <> (if open then " with-bench" else "") <> dragging)
-          , HP.style (Layout.sizeStyle st.sizes)
-          , HE.onMouseMove GutterMove
-          , HE.onMouseUp \_ -> GutterUp
-          , HE.onMouseLeave \_ -> GutterUp
+          [ cls ("desk phone-" <> show st.phone <> dragging)
+          -- Pointer events, so a finger or a pen drags as a mouse does.
+          , HE.handler (EventType "pointermove") \event -> maybe GutterUp GutterMove (MouseEvent.fromEvent event)
+          , HE.handler (EventType "pointerup") \_ -> GutterUp
+          , HE.handler (EventType "pointercancel") \_ -> GutterUp
+          , HE.handler (EventType "pointerleave") \_ -> GutterUp
           ]
-          ( [ HH.div [ cls "pane machine-pane" ]
-                [ HH.div [ cls "pane-body" ] (machineView st wrong) ]
-            , HH.div [ cls "gutter", HP.title "Drag to resize", HE.onMouseDown (GutterDown ControlsEdge) ] []
-            , HH.div [ cls "pane controls-pane" ]
+          ( [ window st FrontWindow (frontView st wrong)
+            , window st InsideWindow (insideView st wrong)
+            , window st ShotWindow (shotView st)
+            , window st ControlsWindow
                 [ HH.div [ cls "pane-head" ]
                     [ segmented
                         (map (\tab -> chosen (st.view.tab == tab) (tabTitle tab) (Change _ { view = st.view { tab = tab } })) tabs)
@@ -336,8 +372,7 @@ render st =
             ]
               <>
                 if open then
-                  [ HH.div [ cls "gutter", HP.title "Drag to resize", HE.onMouseDown (GutterDown BenchEdge) ] []
-                  , HH.div [ cls "pane bench-pane" ]
+                  [ window st BenchWindow
                       [ HH.div [ cls "pane-head" ]
                           [ segmented
                               ( map
@@ -347,7 +382,7 @@ render st =
                           , HH.button
                               [ cls "put-away"
                               , HP.title "Put the bench away"
-                              , HE.onClick \_ -> Change _ { view = st.view { benchOpen = false } }
+                              , HE.onClick \_ -> SetBench false Nothing
                               ]
                               [ HH.text "Put away" ]
                           ]

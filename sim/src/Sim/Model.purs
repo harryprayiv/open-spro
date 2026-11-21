@@ -13,7 +13,7 @@ import Data.Maybe (Maybe)
 import Sim.Advice (Advice)
 import Sim.Backend (Backend, LinkSettings)
 import Sim.Forecast (Forecast)
-import Sim.Layout (Edge, Sizes, View)
+import Sim.Layout (BenchTab, Edge, Sizes, View, Window)
 import Sim.Link (Event)
 import Sim.Machine (Machine)
 import Sim.Params (Group, Params)
@@ -34,14 +34,13 @@ derive instance eqTheme :: Eq Theme
 -- | How faithful the simulator is being.
 -- |
 -- | Arcade is for playing with it. The lamps are eased so they glow and
--- | fade instead of flickering with their elements, the machine's
--- | display can be pressed to wake the machine, and the warm-up can be
--- | skipped.
+-- | fade instead of flickering with their elements.
 -- |
--- | Realistic is for testing against. Nothing is smoothed and nothing
--- | is offered that a real machine could not do: the lamps follow
--- | their outputs exactly, the display is only a display, and the
--- | warm-up takes as long as it takes.
+-- | Realistic is for testing against. The lamps follow their outputs
+-- | exactly, with nothing smoothed.
+-- |
+-- | Waking by pressing the display and skipping the warm-up are offered
+-- | in both.
 data Play = Arcade | Realistic
 
 derive instance eqPlay :: Eq Play
@@ -136,5 +135,8 @@ data Action
   | GutterDown Edge MouseEvent
   | GutterMove MouseEvent
   | GutterUp
-  -- Put the two drawings' windows back where they start.
-  | TidyWindows
+  -- A press in a window, which brings it to the top of the pile.
+  | RaiseWindow Window
+  -- Take the bench out, on one of its tabs if one is named, or put it
+  -- away.
+  | SetBench Boolean (Maybe BenchTab)

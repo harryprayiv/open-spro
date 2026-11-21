@@ -1,11 +1,9 @@
--- | How the page is arranged: three panes. The machine pane shows the
--- | front, the inside and the shot. The controls pane holds every
--- | control behind tabs. The bench pane holds testing and problems and
--- | can be put away. Every edge between two things on the page can be
--- | dragged, and the sizes that sets are kept here. The two drawings in
--- | the machine pane, the front of the machine and its inside, are
--- | windows of their own: each can be dragged about by its title and
--- | resized by its corner.
+-- | How the page is arranged: a desk of five windows. The front of the
+-- | machine, its inside, the shot, the controls and the bench are each
+-- | a window of their own. Any of them can be dragged anywhere on the
+-- | desk by its title and resized by any side or corner, and the one
+-- | touched last lies over the others. The bench can be put away. The
+-- | places and sizes are kept here.
 module Sim.Layout
   ( Tab(..)
   , BenchTab(..)
@@ -19,24 +17,33 @@ module Sim.Layout
   , decode
   , Edge(..)
   , Window(..)
+  , windows
+  , windowName
+  , windowTitle
   , Box
   , boxOf
   , boxStyle
-  , tidied
+  , Grip
+  , grips
+  , gripName
   , dragClass
   , Sizes
+  , arranged
+  , tiled
   , defaultSizes
+  , raised
   , dragEdge
-  , sizeStyle
   , encodeSizes
   , decodeSizes
   ) where
 
 import Prelude
 
-import Data.Array (find, index)
-import Data.Array as Array
-import Data.Maybe (Maybe, fromMaybe)
+import Data.Array (drop, elemIndex, filter, find, index, length, mapMaybe, range, snoc, sortBy, take)
+import Data.Foldable (foldl, minimumBy, sum)
+import Data.Int (floor, toNumber)
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Traversable (traverse)
 import Data.Number as Number
 import Data.String (Pattern(..), joinWith, split)
 
@@ -99,176 +106,265 @@ decode text = case split (Pattern ",") text of
   _ -> defaultView
 
 ------------------------------------------------------------
--- Sizes
+-- Windows
 ------------------------------------------------------------
 
--- | One of the two drawings in the machine pane.
-data Window = FrontWindow | InsideWindow
+-- | The windows on the desk.
+data Window = FrontWindow | InsideWindow | ShotWindow | ControlsWindow | BenchWindow
 
 derive instance eqWindow :: Eq Window
 
--- | Something that can be dragged. Each one sets one size, or the
--- | place or the size of one window.
+windows :: Array Window
+windows = [ FrontWindow, InsideWindow, ShotWindow, ControlsWindow, BenchWindow ]
+
+-- | A window's name in the stylesheet.
+windowName :: Window -> String
+windowName = case _ of
+  FrontWindow -> "front"
+  InsideWindow -> "inside"
+  ShotWindow -> "shot"
+  ControlsWindow -> "controls"
+  BenchWindow -> "bench"
+
+-- | The word on a window's title.
+windowTitle :: Window -> String
+windowTitle = case _ of
+  FrontWindow -> "machine"
+  InsideWindow -> "inside"
+  ShotWindow -> "shot"
+  ControlsWindow -> "controls"
+  BenchWindow -> "bench"
+
+-- | Something that can be dragged: a window by its title, or a window
+-- | by one of its sides or corners.
 data Edge
-  -- between the machine pane and the controls pane
-  = ControlsEdge
-  -- between the controls pane and the bench pane
-  | BenchEdge
-  -- under the area the two drawings share
-  | DrawingsEdge
-  -- under the chart
-  | ChartEdge
-  -- a window, by its title
-  | Move Window
-  -- a window, by its corner
-  | Resize Window
+  = Move Window
+  | Resize Window Grip
 
 derive instance eqEdge :: Eq Edge
 
--- | Where a window is in the area the drawings share, and how big, in
--- | pixels from the area's top left corner.
+-- | Which sides of a window a grip pulls: -1 is the left or the top,
+-- | 1 the right or the bottom, 0 leaves that direction alone.
+type Grip = { across :: Int, down :: Int }
+
+-- | The four sides and the four corners.
+grips :: Array Grip
+grips =
+  [ { across: 0, down: -1 }, { across: 0, down: 1 }, { across: -1, down: 0 }, { across: 1, down: 0 }
+  , { across: -1, down: -1 }, { across: 1, down: -1 }, { across: -1, down: 1 }, { across: 1, down: 1 }
+  ]
+
+-- | A grip's name in the stylesheet: n, s, w, e, nw, ne, sw, se.
+gripName :: Grip -> String
+gripName g = (if g.down < 0 then "n" else if g.down > 0 then "s" else "") <> (if g.across < 0 then "w" else if g.across > 0 then "e" else "")
+
+-- | Where a window is on the desk, and how big, in pixels from the
+-- | desk's top left corner.
 type Box = { x :: Number, y :: Number, w :: Number, h :: Number }
 
--- | The sizes the edges set, in pixels: the widths of the controls
--- | pane and the bench pane, the heights of the drawings' area and of
--- | the chart, the two windows, and which of them is in front where
--- | they overlap. The machine pane takes the width the others leave.
+-- | Every window's box, and the windows from the one at the bottom of
+-- | the pile to the one on top.
 type Sizes =
-  { controls :: Number
-  , bench :: Number
-  , drawings :: Number
-  , chart :: Number
-  , front :: Box
+  { front :: Box
   , inside :: Box
-  , frontOnTop :: Boolean
+  , shot :: Box
+  , controls :: Box
+  , bench :: Box
+  , order :: Array Window
   }
 
+-- | The windows laid out to fill a page of this width and height with
+-- | none over another: the front beside the inside, the shot under
+-- | both, the controls down the right. The bench, which starts put
+-- | away, lies over the bottom of the left side when it is taken out.
+arranged :: Number -> Number -> Sizes
+arranged pageWide pageHigh =
+  let
+    gap = 10.0
+    -- The top bar takes about this much of the page's height.
+    wide = max 700.0 pageWide - 2.0 * gap
+    high = max 480.0 (pageHigh - 58.0) - 2.0 * gap
+    controlsWide = clamp 340.0 560.0 (wide * 0.34)
+    leftWide = wide - controlsWide - gap
+    topHigh = clamp 240.0 560.0 (high * 0.54)
+    -- The drawing of the front is a little higher than it is wide.
+    frontWide = clamp 200.0 (leftWide * 0.5) (topHigh * 0.86)
+    benchWide = clamp 300.0 460.0 (wide * 0.3)
+    benchHigh = clamp 240.0 620.0 (high * 0.6)
+  in
+    { front: { x: gap, y: gap, w: frontWide, h: topHigh }
+    , inside: { x: gap + frontWide + gap, y: gap, w: leftWide - frontWide - gap, h: topHigh }
+    , shot: { x: gap, y: gap + topHigh + gap, w: leftWide, h: high - topHigh - gap }
+    , controls: { x: gap + leftWide + gap, y: gap, w: controlsWide, h: high }
+    , bench: { x: gap + leftWide - benchWide, y: gap + high - benchHigh, w: benchWide, h: benchHigh }
+    , order: [ ShotWindow, InsideWindow, FrontWindow, ControlsWindow, BenchWindow ]
+    }
+
+-- | The windows that are out, fitted to a page of this width and
+-- | height so that none lies over another and together they fill it,
+-- | each kept as near as can be to where it is and to the shape it has.
+-- | The page is cut in two by a straight line, upright or level, each
+-- | part is cut again, and so on until every part holds one window.
+-- | The two sides of a cut share the room by the area their windows
+-- | hold now, so a window that was made large stays the larger. Every
+-- | way of cutting is tried, which for five windows is a few hundred,
+-- | and the one that moves and reshapes the windows least is taken.
+tiled :: Number -> Number -> Array Window -> Sizes -> Sizes
+tiled pageWide pageHigh shown s =
+  held (foldl (\t p -> setBox p.window p.box t) s (pack page (map (\window -> { window, box: boxOf window s }) shown)).placed)
+  where
+  gap = 10.0
+  page = { x: gap, y: gap, w: max 700.0 pageWide - 2.0 * gap, h: max 480.0 (pageHigh - 58.0) - 2.0 * gap }
+  square n = n * n
+  -- How far a window is from its box when it is given this room: how
+  -- far its middle moves, as a share of the page, and how much its
+  -- shape changes. Room too small to use counts heavily against a
+  -- cut.
+  strain p room =
+    square ((room.x + room.w / 2.0 - p.box.x - p.box.w / 2.0) / page.w)
+      + square ((room.y + room.h / 2.0 - p.box.y - p.box.h / 2.0) / page.h)
+      + 0.3 * square (Number.log ((room.w / room.h) / (p.box.w / p.box.h)))
+      + (if room.w < 1.5 * smallestWide || room.h < 1.5 * smallestHigh then 10.0 else 0.0)
+  pack area placed = case placed of
+    [] -> { cost: 0.0, placed: [] }
+    [ only ] -> { cost: strain only area, placed: [ only { box = area } ] }
+    _ ->
+      fromMaybe { cost: 0.0, placed: [] }
+        (minimumBy (comparing _.cost) (map (cutAt area) (cuts true placed <> cuts false placed)))
+  cutAt area cut =
+    let
+      share = clamp 0.12 0.88 (ground cut.first / (ground cut.first + ground cut.rest))
+      wide = (area.w - gap) * share
+      high = (area.h - gap) * share
+      one = pack (if cut.sideways then area { w = wide } else area { h = high }) cut.first
+      other = pack (if cut.sideways then area { x = area.x + wide + gap, w = area.w - gap - wide } else area { y = area.y + high + gap, h = area.h - gap - high }) cut.rest
+    in
+      { cost: one.cost + other.cost, placed: one.placed <> other.placed }
+  -- Every way of dividing the windows in two across one direction, in
+  -- the order their middles lie in.
+  cuts sideways placed =
+    let
+      middle p = if sideways then p.box.x + p.box.w / 2.0 else p.box.y + p.box.h / 2.0
+      inOrder = sortBy (comparing middle) placed
+    in
+      range 1 (length placed - 1) <#> \k -> { sideways, first: take k inOrder, rest: drop k inOrder }
+  ground group = sum (map (\p -> p.box.w * p.box.h) group)
+
+-- | One window's box replaced.
+setBox :: Window -> Box -> Sizes -> Sizes
+setBox window b s = case window of
+  FrontWindow -> s { front = b }
+  InsideWindow -> s { inside = b }
+  ShotWindow -> s { shot = b }
+  ControlsWindow -> s { controls = b }
+  BenchWindow -> s { bench = b }
+
+-- | The arrangement for a page whose size is not known yet.
 defaultSizes :: Sizes
-defaultSizes =
-  { controls: 560.0
-  , bench: 420.0
-  , drawings: 380.0
-  , chart: 200.0
-  , front: { x: 0.0, y: 0.0, w: 320.0, h: 380.0 }
-  , inside: { x: 328.0, y: 0.0, w: 520.0, h: 380.0 }
-  , frontOnTop: false
-  }
-
--- | The two windows put back where they start, side by side, with
--- | everything else left as it is.
-tidied :: Sizes -> Sizes
-tidied s = s { front = defaultSizes.front, inside = defaultSizes.inside, frontOnTop = defaultSizes.frontOnTop, drawings = defaultSizes.drawings }
+defaultSizes = arranged 1500.0 900.0
 
 boxOf :: Window -> Sizes -> Box
 boxOf window s = case window of
   FrontWindow -> s.front
   InsideWindow -> s.inside
+  ShotWindow -> s.shot
+  ControlsWindow -> s.controls
+  BenchWindow -> s.bench
 
--- | A window's place and size as CSS.
-boxStyle :: Box -> String
-boxStyle b =
-  joinWith "; "
-    [ "left: " <> show b.x <> "px"
-    , "top: " <> show b.y <> "px"
-    , "width: " <> show b.w <> "px"
-    , "height: " <> show b.h <> "px"
-    -- A window that starts inside the area never runs past its right
-    -- edge, so a narrow page does not cut the drawing off.
-    , "max-width: max(160px, calc(100% - " <> show b.x <> "px))"
-    ]
+-- | A window's place, size and height in the pile as CSS.
+boxStyle :: Window -> Sizes -> String
+boxStyle window s =
+  let
+    b = boxOf window s
+  in
+    joinWith "; "
+      [ "left: " <> show b.x <> "px"
+      , "top: " <> show b.y <> "px"
+      , "width: " <> show b.w <> "px"
+      , "height: " <> show b.h <> "px"
+      , "z-index: " <> show (1 + fromMaybe 0 (elemIndex window s.order))
+      ]
 
--- | The class the page wears during a drag, which sets the pointer.
+-- | The window put on top of the pile.
+raised :: Window -> Sizes -> Sizes
+raised window s = s { order = snoc (filter (_ /= window) s.order) window }
+
+-- | The class the desk wears during a drag, which sets the pointer.
 dragClass :: Edge -> String
 dragClass = case _ of
-  ControlsEdge -> " dragging"
-  BenchEdge -> " dragging"
-  DrawingsEdge -> " dragging flat"
-  ChartEdge -> " dragging flat"
   Move _ -> " dragging moving"
-  Resize _ -> " dragging sizing"
+  Resize _ g -> " dragging sizing-" <> gripName g
 
--- | No size is let go so small that it cannot be got hold of again, or
--- | so large that it could not be dragged back. A window stays where
--- | its title can be reached.
+-- | The smallest a window is let go.
+smallestWide :: Number
+smallestWide = 140.0
+
+smallestHigh :: Number
+smallestHigh = 110.0
+
+-- | No window is let go so small that it cannot be got hold of again,
+-- | or so far off that its title could not be reached.
 held :: Sizes -> Sizes
-held s =
-  s
-    { controls = clamp 320.0 1600.0 s.controls
-    , bench = clamp 260.0 1200.0 s.bench
-    , drawings = clamp 120.0 2400.0 s.drawings
-    , chart = clamp 60.0 1600.0 s.chart
-    , front = box s.front
-    , inside = box s.inside
-    }
+held s = s { front = box s.front, inside = box s.inside, shot = box s.shot, controls = box s.controls, bench = box s.bench }
   where
-  box b = { x: clamp 0.0 3000.0 b.x, y: clamp 0.0 2200.0 b.y, w: clamp 140.0 3000.0 b.w, h: clamp 120.0 2400.0 b.h }
+  box b = { x: clamp 0.0 6000.0 b.x, y: clamp 0.0 4000.0 b.y, w: clamp smallestWide 6000.0 b.w, h: clamp smallestHigh 4000.0 b.h }
 
--- | Something dragged by this many pixels to the right and down. The
--- | panes on the right grow as their left edge moves left. A window
--- | that is moved or resized comes to the front, and the drawings' area
--- | grows to hold a window dragged or stretched past its bottom.
+-- | A window dragged by this many pixels to the right and down, by its
+-- | title or by a grip. It comes to the top of the pile.
 dragEdge :: Edge -> Number -> Number -> Sizes -> Sizes
 dragEdge edge dx dy s = held case edge of
-  ControlsEdge -> s { controls = s.controls - dx }
-  BenchEdge -> s { bench = s.bench - dx }
-  DrawingsEdge -> s { drawings = s.drawings + dy }
-  ChartEdge -> s { chart = s.chart + dy }
-  Move window -> fitted (change window \b -> b { x = b.x + dx, y = b.y + dy })
-  Resize window -> fitted (change window \b -> b { w = b.w + dx, h = b.h + dy })
+  Move window -> change window \b -> b { x = b.x + dx, y = b.y + dy }
+  Resize window g -> change window (pulled g)
   where
-  change window f = case window of
-    FrontWindow -> s { front = f s.front, frontOnTop = true }
-    InsideWindow -> s { inside = f s.inside, frontOnTop = false }
-  fitted t = t { drawings = max t.drawings (max (t.front.y + t.front.h) (t.inside.y + t.inside.h)) }
+  change window f = setBox window (f (boxOf window s)) (raised window s)
+  -- A side that is pulled moves with the pointer while the side across
+  -- from it stays where it is. Nothing goes below the smallest size or
+  -- past the top or the left of the desk.
+  pulled g b =
+    let
+      wide =
+        if g.across > 0 then { x: b.x, w: max smallestWide (b.w + dx) }
+        else if g.across < 0 then let moved = clamp (-b.x) (b.w - smallestWide) dx in { x: b.x + moved, w: b.w - moved }
+        else { x: b.x, w: b.w }
+      high =
+        if g.down > 0 then { y: b.y, h: max smallestHigh (b.h + dy) }
+        else if g.down < 0 then let moved = clamp (-b.y) (b.h - smallestHigh) dy in { y: b.y + moved, h: b.h - moved }
+        else { y: b.y, h: b.h }
+    in
+      { x: wide.x, y: high.y, w: wide.w, h: high.h }
 
--- | The sizes as CSS variables. The stylesheet uses them on a wide
--- | screen and ignores them on a phone.
-sizeStyle :: Sizes -> String
-sizeStyle s =
-  joinWith "; "
-    [ "--controls: " <> show s.controls <> "px"
-    , "--bench: " <> show s.bench <> "px"
-    , "--drawings: " <> show s.drawings <> "px"
-    , "--chart: " <> show s.chart <> "px"
-    ]
-
--- | Thirteen numbers separated by commas: the four sizes, the front
--- | window's box, the inside window's box, and 1 if the front window
--- | is in front.
+-- | Twenty-five numbers separated by commas: the box of each window in
+-- | the order of `windows`, then the pile from bottom to top, each
+-- | window as its place in `windows`.
 encodeSizes :: Sizes -> String
 encodeSizes s =
   joinWith ","
     ( map show
-        [ s.controls, s.bench, s.drawings, s.chart
-        , s.front.x, s.front.y, s.front.w, s.front.h
-        , s.inside.x, s.inside.y, s.inside.w, s.inside.h
-        , if s.frontOnTop then 1.0 else 0.0
-        ]
+        ( (windows >>= \window -> let b = boxOf window s in [ b.x, b.y, b.w, b.h ])
+            <> mapMaybe (\window -> map toNumber (elemIndex window windows)) s.order
+        )
     )
 
--- | A size that is missing or unreadable falls back to its default.
--- | What an older page stored, which was fewer numbers in another
--- | order, keeps its two pane widths and starts the rest afresh.
-decodeSizes :: String -> Sizes
-decodeSizes text =
+-- | Nothing unless the text is what `encodeSizes` writes, which is
+-- | also the answer for what an older page stored. The page then lays
+-- | the windows out afresh.
+decodeSizes :: String -> Maybe Sizes
+decodeSizes text = do
+  numbers <- traverse Number.fromString (split (Pattern ",") text)
+  if length numbers /= 25 then Nothing else pure unit
   let
-    parts = split (Pattern ",") text
-    current = Array.length parts == 13
-    at :: Int -> Number -> Number
-    at i fallback = fromMaybe fallback (index parts i >>= readNumber)
-    now :: Int -> Number -> Number
-    now i fallback = if current then at i fallback else fallback
-    d = defaultSizes
-  in
-    held
-      { controls: at 0 d.controls
-      , bench: at 1 d.bench
-      , drawings: now 2 d.drawings
-      , chart: now 3 d.chart
-      , front: { x: now 4 d.front.x, y: now 5 d.front.y, w: now 6 d.front.w, h: now 7 d.front.h }
-      , inside: { x: now 8 d.inside.x, y: now 9 d.inside.y, w: now 10 d.inside.w, h: now 11 d.inside.h }
-      , frontOnTop: now 12 0.0 > 0.5
-      }
-
-readNumber :: String -> Maybe Number
-readNumber = Number.fromString
+    at i = fromMaybe 0.0 (index numbers i)
+    box i = { x: at (4 * i), y: at (4 * i + 1), w: at (4 * i + 2), h: at (4 * i + 3) }
+    pile = mapMaybe (\i -> index windows (floor (at (20 + i)))) [ 0, 1, 2, 3, 4 ]
+    -- A pile that does not name every window once is not trusted.
+    whole = length pile == 5 && filter (\window -> length (filter (_ == window) pile) /= 1) windows == []
+  pure
+    ( held
+        { front: box 0
+        , inside: box 1
+        , shot: box 2
+        , controls: box 3
+        , bench: box 4
+        , order: if whole then pile else defaultSizes.order
+        }
+    )

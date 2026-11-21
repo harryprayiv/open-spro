@@ -12,13 +12,15 @@ module Sim.View.Playhead
 
 import Prelude
 
-import Data.Array (mapMaybe)
-import Data.Maybe (Maybe(..), isJust)
+import Data.Array (index, mapMaybe)
+import Data.Maybe (Maybe(..), isJust, maybe)
+import Data.String (joinWith)
 import Halogen.HTML as HH
 import Sim.Link (Event(..), FaderMode(..))
 import Sim.Model (Action(..), State)
 import Sim.Types (MachineState(..))
-import Sim.Update (playheadAt, segments, timelineSpan)
+import Sim.Recipe (roastLabel)
+import Sim.Update (allShapes, playheadAt, segments, timelineSpan)
 import Sim.View.Front (Ink)
 import Sim.View.Widgets (button, cls, n1)
 
@@ -50,6 +52,9 @@ inkOf st =
     , limits: case shot >>= _.manual of
         Just _ -> Just { low: cfg.manualMinBar, high: cfg.manualMaxBar }
         Nothing -> Nothing
+    , bean: if st.recipe.name == "" then "Unnamed beans" else st.recipe.name
+    , details: joinWith " / " ([ roastLabel st.recipe.roast <> " roast" ] <> (if st.recipe.roaster == "" then [] else [ st.recipe.roaster ]))
+    , profile: maybe "" _.name (index (allShapes st) st.recipe.profileIndex)
     }
 
 playhead :: forall w. State -> HH.HTML w Action

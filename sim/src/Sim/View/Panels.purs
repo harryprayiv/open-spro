@@ -1,6 +1,7 @@
--- | What the machine pane, the brew tab and the bench's problem and
--- | reading tabs show.
-module Sim.View.Panels (machineView, brew, cup, faults, readings) where
+-- | What the windows of the drawings and the shot, the brew tab and
+-- | the bench's problem and reading tabs show, and the frame every
+-- | window on the desk wears.
+module Sim.View.Panels (frontView, insideView, shotView, window, brew, cup, faults, readings) where
 
 import Prelude
 
@@ -14,13 +15,17 @@ import Data.String (joinWith)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
+import Web.Event.Event (EventType(..))
+import Web.UIEvent.MouseEvent (MouseEvent)
+import Web.UIEvent.MouseEvent as MouseEvent
 import Sim.Cup as Cup
 import Sim.Flavor as Flavor
 import Sim.Link (Event(..), FaderMode(..), faderScale)
 import Sim.Machine (Machine, silence)
 import Sim.Invariants (checks)
-import Sim.Layout (Edge(..), Window(..), boxOf, boxStyle)
+import Sim.Layout (Edge(..), Window, boxStyle, gripName, grips, windowName, windowTitle)
 import Sim.Model (Action(..), Field(..), Play(..), State, Theme(..))
+import Sim.Plant (steamSafetyValveBar)
 import Sim.Problems (Problems, anyProblem)
 import Sim.Recipe (Recipe, Roast, roastLabel, roastNote, roasts, samples, targetGrams)
 import Sim.Types (ClientKind(..), FaultKind(..), PowerMode(..), Shot)
@@ -37,13 +42,12 @@ onOff :: Boolean -> String
 onOff b = if b then "on" else "off"
 
 ------------------------------------------------------------
--- Machine pane
+-- The drawings and the shot
 ------------------------------------------------------------
 
--- | The front of the machine beside its inside, with the shot under
--- | both.
-machineView :: forall w. State -> Problems -> Array (HH.HTML w Action)
-machineView st wrong =
+-- | The front of the machine, with the fader laid over its slot.
+frontView :: forall w. State -> Problems -> Array (HH.HTML w Action)
+frontView st wrong =
   let
     m = st.machine
     c = m.status
@@ -53,11 +57,8 @@ machineView st wrong =
     held = isJust (c.shot >>= _.manual) || isJust (c.shot >>= _.manualC)
     recent = Array.takeEnd 6 m.trace
   in
-    [ nowPlaying st
-    , HH.div [ cls "views" ]
-        [ window st FrontWindow "machine"
-            [ HH.div [ cls "front-cell" ]
-            [ HH.div [ cls "fader-wrap" ]
+    [ HH.div [ cls "front-cell" ]
+        [ HH.div [ cls "fader-wrap" ]
             [ front
             { now: m.at
             , night: st.theme == Night
@@ -116,28 +117,46 @@ machineView st wrong =
                 , HE.onMouseUp \_ -> FaderDrop
                 ]
             ]
-            ]
-            ]
-        , window st InsideWindow "inside"
-            [ inside
-            { now: m.at
-            , act: c.act
-            , flowMlPerS: c.flowMlPerS
-            , reservoirC: s.brewBoilerC
-            , mixC: s.mixC
-            , steamBar: s.steamBar
-            , steamWaterMl: sim.steamWaterMl
-            , steamValveOpen: sim.dist.steamValveOpen
-            , problems: wrong
-            }
-            ]
-        , HH.button [ cls "tidy", HP.title "Put the two windows back side by side", HE.onClick \_ -> TidyWindows ] [ HH.text "tidy" ]
         ]
-    , edge DrawingsEdge
+    ]
+
+-- | The plumbing behind the front.
+insideView :: forall w. State -> Problems -> Array (HH.HTML w Action)
+insideView st wrong =
+  let
+    m = st.machine
+    c = m.status
+    s = m.sensors
+    sim = simView st
+  in
+    [ inside
+    { now: m.at
+    , act: c.act
+    , flowMlPerS: c.flowMlPerS
+    , reservoirC: s.brewBoilerC
+    , mixC: s.mixC
+    , brewBar: s.brewBar
+    , steamBar: s.steamBar
+    , expansionBar: st.params.plant.expansionValveBar
+    , steamSafetyBar: steamSafetyValveBar
+    , steamWaterMl: sim.steamWaterMl
+    , steamValveOpen: sim.dist.steamValveOpen
+    , problems: wrong
+    }
+    ]
+
+-- | The shot: what the last one made, the profile with its playhead,
+-- | and the chart of what the machine did. The beans and the profile
+-- | in use are named on the machine's own display.
+shotView :: forall w. State -> Array (HH.HTML w Action)
+shotView st =
+  let
+    m = st.machine
+  in
+    [ cupLine st
     , playhead st
     , HH.p [ cls "shot-line" ] [ HH.text (shotLine m) ]
     , chart m.trace
-    , edge ChartEdge
     , HH.p [ cls "legend" ]
         [ legend "bar" "pressure, bar (0 to 12)"
         , legend "flow" "flow, ml/s (0 to 12)"
@@ -147,30 +166,30 @@ machineView st wrong =
         ]
     ]
 
--- | One of the two drawings as a window in the area they share: a
--- | title to drag it by, the drawing, and a corner to resize it by.
--- | Whichever was touched last is in front.
-window :: forall w. State -> Window -> String -> Array (HH.HTML w Action) -> HH.HTML w Action
-window st which title content =
+-- | A window on the desk: a title to drag it by, what it holds, and a
+-- | grip on every side and corner to resize it by. A press anywhere in
+-- | it brings it to the top of the pile. When it is let go the desk
+-- | fits every window to the page again.
+window :: forall w. State -> Window -> Array (HH.HTML w Action) -> HH.HTML w Action
+window st which content =
   HH.div
-    [ cls ("win" <> (if (which == FrontWindow) == st.sizes.frontOnTop then " in-front" else ""))
-    , HP.style (boxStyle (boxOf which st.sizes))
+    [ cls ("win w-" <> windowName which <> (if Array.last st.sizes.order == Just which then " in-front" else ""))
+    , HP.style (boxStyle which st.sizes)
+    , pressed (const (RaiseWindow which))
     ]
-    [ HH.div [ cls "win-title", HP.title "Drag to move", HE.onMouseDown (GutterDown (Move which)) ] [ HH.text title ]
-    , HH.div [ cls "win-body" ] content
-    , HH.div [ cls "win-corner", HP.title "Drag to resize", HE.onMouseDown (GutterDown (Resize which)) ] []
-    ]
+    ( [ HH.div [ cls "win-title", HP.title "Drag to move", pressed (GutterDown (Move which)) ] [ HH.text (windowTitle which) ]
+      , HH.div [ cls "win-body" ] content
+      , HH.div [ cls "win-mark" ] []
+      ]
+        <> map grip grips
+    )
+  where
+  grip g = HH.div [ cls ("win-grip " <> gripName g), HP.title "Drag to resize", pressed (GutterDown (Resize which g)) ] []
 
--- | An edge that lies flat between two things in the machine pane, to
--- | drag.
-edge :: forall w. Edge -> HH.HTML w Action
-edge which =
-  HH.div
-    [ cls "gutter flat"
-    , HP.title "Drag to resize"
-    , HE.onMouseDown (GutterDown which)
-    ]
-    []
+-- | A press with a mouse, a finger or a pen. A pointer event is a
+-- | mouse event with more in it, so it is read as one.
+pressed :: forall r. (MouseEvent -> Action) -> HP.IProp r Action
+pressed action = HE.handler (EventType "pointerdown") \event -> maybe GutterUp action (MouseEvent.fromEvent event)
 
 ------------------------------------------------------------
 -- Controls pane, brew tab
@@ -189,15 +208,14 @@ brew st =
         , toggle "Steam" sim.dist.steamValveOpen (Disturb \d -> d { steamValveOpen = not d.steamValveOpen })
         ]
     -- Power sits directly under the shot buttons, where it shows without
-    -- scrolling. Only the simulator can skip a warm-up, so realistic play
-    -- does not offer that button.
+    -- scrolling. Skipping the warm-up is offered in both kinds of play.
     , HH.div [ cls "choices" ]
         ( [ button "Wake, brew" (Send (WakeRequested BrewReady))
           , button "Wake, brew and steam" (Send (WakeRequested Full))
           , button "Sleep" (Send SleepRequested)
           ]
-            <> (if st.play == Arcade then [ button "Skip warm-up" SkipWarmUp ] else [])
-            <> [ segmented (map (\speed -> chosen (sim.speed == speed) (show speed <> "x") (SetSpeed speed)) [ 1, 10, 60 ])
+            <> [ button "Skip warm-up" SkipWarmUp
+              , segmented (map (\speed -> chosen (sim.speed == speed) (show speed <> "x") (SetSpeed speed)) [ 1, 10, 60 ])
               , button "Reset" Reset
               ]
         )
@@ -238,24 +256,14 @@ brew st =
         ]
     ]
 
--- | The beans in use, shown over the machine while it is in use.
-nowPlaying :: forall w i. State -> HH.HTML w i
-nowPlaying st =
+-- | What the last shot made, in a line, once it is over.
+cupLine :: forall w i. State -> HH.HTML w i
+cupLine st =
   let
-    r = st.recipe
-    said text = if text == "" then [] else [ text ]
-    details = said r.roaster <> [ roastLabel r.roast <> " roast" ] <> (if r.roastedOn == "" then [] else [ "roasted " <> r.roastedOn ])
-    cupNote =
-      if isJust st.machine.shot || null st.machine.history then ""
-      else Cup.cupNote sim.puck.extracted sim.brewed
     sim = simView st
   in
-    HH.div [ cls "now-playing" ]
-      [ HH.span [ cls "now-label" ] [ HH.text "Now brewing" ]
-      , HH.span [ cls "now-bean" ] [ HH.text (if r.name == "" then "Unnamed beans" else r.name) ]
-      , HH.span [ cls "now-details" ] [ HH.text (joinWith ", " details) ]
-      , HH.span [ cls "now-cup" ] [ HH.text cupNote ]
-      ]
+    HH.p [ cls "now-cup" ]
+      [ HH.text (if isJust st.machine.shot || null st.machine.history then "" else Cup.cupNote sim.puck.extracted sim.brewed) ]
 
 -- | The roast as a drum: the chosen level in the window with its
 -- | neighbours turning away above and below. Clicking a neighbour turns
