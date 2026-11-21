@@ -5,8 +5,8 @@ module Test.Main (main) where
 
 import Prelude
 
-import Data.Array (drop, filter, last, length, take, zipWith)
-import Data.Array.NonEmpty (toArray)
+import Data.Array (drop, filter, last, length, replicate, take, zipWith)
+import Data.Array.NonEmpty (fromArray, head, toArray)
 import Data.Either (Either(..), isLeft, isRight)
 import Data.Foldable (and, foldl, for_, maximum)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
@@ -27,7 +27,7 @@ import Sim.Plant (brewed)
 import Sim.Profiles as Profiles
 import Sim.Recipe as Recipe
 import Sim.Shapes as Shapes
-import Sim.Types (Curve(..), FaultKind(..), MachineState(..), PowerMode(..), Profile, ShotState(..), StepMode(..), defaultConfig)
+import Sim.Types (ClientKind(..), Curve(..), FaultKind(..), MachineState(..), PowerMode(..), Profile, ShotState(..), StepMode(..), defaultConfig)
 import Sim.World (World, dt, initialWorld, paramsOf, send, sensors, setParams, stepMany, stepWorld, warmUp, worldWith)
 
 n1 :: Number -> String
@@ -213,7 +213,8 @@ parameters :: World -> Effect Unit
 parameters ready = do
   log "Parameters"
   let lossy = Params.defaults { plant = Params.defaults.plant { groupLossWPerK = 6.0 } }
-  let cooled p = (sensors (runUntil 600.0 (const false) (setParams p ready { ctl = ready.ctl { requestedMode = Asleep, state = Sleeping } }))).groupC
+  asleep <- sendOrFail SleepRequested ready
+  let cooled p = (sensors (runUntil 600.0 (const false) (setParams p asleep))).groupC
   let slow = cooled Params.defaults
   let fast = cooled lossy
   log ("  group block after 10 unheated minutes: " <> n1 slow <> " C by default, " <> n1 fast <> " C with six times the loss")
@@ -557,6 +558,47 @@ character = do
     )
   expect "advice exists for the under-extracted sample" (isJust (ask free light))
 
+-- | The controller is the Rust core, loaded as wasm. These check the
+-- | seam itself: that a machine is a value, that refusals come from the
+-- | core in its own words, that the core's fixed sizes are enforced,
+-- | and that single precision inside it breaks no invariant.
+controllerCore :: World -> Effect Unit
+controllerCore ready = do
+  log "The controller core"
+  -- One wasm module serves every machine. Running one machine on must
+  -- not disturb another, or a forecast would move the machine on the page.
+  let once = stepWorld ready
+  let elsewhere = stepMany 400 ready
+  let again = stepWorld ready
+  expect "a machine is a value: running one on leaves another as it was"
+    (elsewhere.now > once.now && sensors once == sensors again && once.ctl.act == again.ctl.act && once.ctl.state == again.ctl.state)
+  let reason w event = case send event w of
+        Left why -> why
+        Right _ -> ""
+  expect "a refusal carries the core's own reason"
+    (reason initialWorld ShotRequested == "machine is not ready" && reason initialWorld SleepRequested == "machine is not awake")
+  let steps n = Profiles.classic { steps = fromMaybe Profiles.classic.steps (fromArray (replicate n (head Profiles.classic.steps))) }
+  expect "a profile of twelve steps is accepted" (isRight (send (ProfileSelected (steps 12)) ready))
+  expect "a profile of thirteen steps is refused by the core" (contains (Pattern "more than twelve") (reason ready (ProfileSelected (steps 13))))
+  expect "a profile too long to send is refused before it is sent" (contains (Pattern "too many steps") (reason ready (ProfileSelected (steps 40))))
+  let
+    faultAndClear w _ = case send (SensorFailed SensorOpen) w >>= send (FaultsCleared Service) of
+      Right next -> next
+      Left _ -> w
+  let worn = foldl faultAndClear initialWorld (replicate 11 unit)
+  expect "the controller remembers its newest eight faults" (length worn.ctl.faults == 8 && and (map (isJust <<< _.clearedAt) worn.ctl.faults))
+  -- A limit that single precision cannot hold exactly.
+  let odd = Params.defaults { config = Params.defaults.config { brewPressureLimitBar = 9.3, paceLimitBar = 2.7 } }
+  first <- sendOrFail ShotRequested (setParams odd (warmUp ready))
+  let one = runUntil 200.0 (\w -> not (shotInProgress w.ctl)) first
+  expect "limits that single precision rounds break no invariant" (one.violations == [] && one.ctl.faults == [])
+  expect "the parameters the page holds are the ones it set" ((paramsOf one).config.brewPressureLimitBar == 9.3)
+  let rested = runUntil 1800.0 (\w -> w.ctl.state == Ready) (warmUp one)
+  second <- sendOrFail ShotRequested rested
+  let two = runUntil 200.0 (\w -> not (shotInProgress w.ctl)) second
+  expect "the log of shots is kept on this side, one entry per shot"
+    (map _.state two.ctl.history == [ StoppedByWeight, StoppedByWeight ] && and (map (isJust <<< _.finalGrams) two.ctl.history))
+
 main :: Effect Unit
 main = do
   coffeeMap
@@ -579,5 +621,6 @@ main = do
   steaming warm
   rampIsFollowed warm
   preInfusion warm
+  controllerCore warm
   parameters cold
   log "All scenarios passed."

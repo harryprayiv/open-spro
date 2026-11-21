@@ -25,6 +25,7 @@ import Data.Either (Either)
 import Data.Int (round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Sim.Controller (Ctl, Event(..), handle, heaterDrawWatts, initialCtl, shotInProgress, tick)
+import Sim.Controller as Controller
 import Sim.Invariants (violated)
 import Sim.Params (Params)
 import Sim.Params as Params
@@ -119,7 +120,7 @@ paramsOf w = { plant: w.plant.k, config: w.ctl.cfg, tuning: w.ctl.tune }
 setParams :: Params -> World -> World
 setParams params w = w
   { plant = w.plant { k = params.plant }
-  , ctl = w.ctl { cfg = params.config, tune = params.tuning }
+  , ctl = Controller.setParams params.config params.tuning w.ctl
   }
 
 sensors :: World -> Sensors

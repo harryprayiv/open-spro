@@ -1,0 +1,24 @@
+[package]
+name = "spro-core"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "The open-spro controller: the rules of spec/machine.allium and the control laws, with no hardware in it"
+
+# One crate, two shapes. The rlib is what the ESP32 firmware links. The
+# cdylib is the same code built for wasm32, which the simulator loads
+# in place of a controller of its own.
+[lib]
+path = "src/spro_core.rs"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+# exp for the ramp curves, in pure Rust, so every target computes the
+# same bits.
+libm = "0.2"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1

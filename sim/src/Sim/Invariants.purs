@@ -1,6 +1,12 @@
--- | The invariants of spec/machine.allium, evaluated against the live
--- | controller state after every cycle. OneShotAtATime has no entry
--- | because `Ctl` holds at most one running shot by construction.
+-- | The invariants of spec/machine.allium, evaluated after every cycle
+-- | against what the controller reports. The controller is the Rust
+-- | core, and these checks are written here, apart from it, so they are
+-- | an independent watch on it. OneShotAtATime has no entry because the
+-- | controller has one slot for a running shot by construction.
+-- |
+-- | The core computes in single precision and the limits here are held
+-- | in double, so the two numeric bounds allow for the rounding of one
+-- | single-precision number.
 module Sim.Invariants
   ( Check
   , checks
@@ -15,6 +21,11 @@ import Sim.Controller (Ctl, heaterDrawWatts, shotInProgress)
 import Sim.Types (GroupValve(..), MachineState(..), MixValve(..), PowerMode(..), PumpMode(..), Sensors, TwoWay(..))
 
 type Check = { name :: String, holds :: Boolean }
+
+-- | More than the rounding of a single-precision number of the size of
+-- | a pressure in bar, and far less than anything that matters.
+rounding :: Number
+rounding = 1.0e-5
 
 implies :: Boolean -> Boolean -> Boolean
 implies a b = not a || b
@@ -51,14 +62,14 @@ checks s c =
       , holds: inShot `implies` (a.mixValve == Regulating)
       }
     , { name: "PaceTrimBounded"
-      , holds: c.paceTrimBar >= -c.cfg.paceLimitBar && c.paceTrimBar <= c.cfg.paceLimitBar
+      , holds: c.paceTrimBar >= -c.cfg.paceLimitBar - rounding && c.paceTrimBar <= c.cfg.paceLimitBar + rounding
       }
     , { name: "NoPaceOutsideShot"
       , holds: not inShot `implies` (c.paceTrimBar == 0.0)
       }
     , { name: "PressureSetpointUnderLimit"
       , holds: case c.pressureTargetBar of
-          Just bar -> bar <= c.cfg.brewPressureLimitBar - 1.0 + 1.0e-9
+          Just bar -> bar <= c.cfg.brewPressureLimitBar - 1.0 + rounding
           Nothing -> true
       }
     , { name: "NoFillDuringShot"

@@ -1001,3 +1001,27 @@ surface PaceLoop {
 --     max_duration), and whether a limit on how steeply a pressure
 --     setpoint may rise in the step after a wetting step belongs in
 --     the config block.
+-- 14. This spec is implemented once, in the Rust crate
+--     firmware/spro-core. The microcontroller links it and the
+--     simulator loads the same crate built for wasm, so the simulated
+--     machine and the real one run one controller. Four things in that
+--     crate are narrower than this spec and are not yet decided here:
+--     a. machine.faults is every fault ever raised. The crate keeps the
+--        newest eight, cleared or not, and forgets the oldest when a
+--        ninth is raised. ClearFaults still clears every fault it
+--        holds. Whether an uncleared fault may ever be forgotten is not
+--        decided; with the machine faulted no new fault can be raised
+--        except by SensorFault, which refuses while faulted, so today
+--        it cannot happen.
+--     b. The crate keeps the running shot and the last ended shot. The
+--        log of all shots belongs to the service on the Pi.
+--     c. A profile has between one and twelve steps. SelectProfile with
+--        more is refused as a malformed message, which is a refusal
+--        this spec has no rule for.
+--     d. Quantities are single precision and time is whole
+--        milliseconds. A duration in the config block is met within
+--        one controller cycle of its value.
+--     The messages between the crate and its caller (core_wire.rs) are
+--     the fields of this spec's surfaces as flat numbers. The framing
+--     for the link from the Pi (CBOR over UART in docs/design.md) is
+--     not written.

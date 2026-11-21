@@ -32,6 +32,10 @@
       # The ESP32-C6 is RISC-V, so upstream stable Rust builds the firmware.
       firmwareTarget = "riscv32imac-unknown-none-elf";
 
+      # The controller core is also built for wasm, which is how the
+      # simulator runs the same code the microcontroller does.
+      wasmTarget = "wasm32-unknown-unknown";
+
       rustToolchainFor = system:
         let fx = fenix.packages.${system};
         in fx.combine [
@@ -40,7 +44,11 @@
           fx.stable.rust-src
           fx.stable.clippy
           fx.stable.rustfmt
+          # The host's own standard library, for build scripts and for
+          # `cargo test` of the controller core.
+          fx.stable.rust-std
           fx.targets.${firmwareTarget}.stable.rust-std
+          fx.targets.${wasmTarget}.stable.rust-std
         ];
     in
     {
@@ -91,6 +99,36 @@
           design = pkgs.mkShell {
             name = "espresso-design";
             packages = designTools;
+          };
+        });
+
+      # `nix run .#core-wasm` builds the controller core for wasm and
+      # writes it, as base64 text, where the simulator imports it.
+      apps = forAllSystems ({ system, pkgs }:
+        let
+          coreWasm = pkgs.writeShellApplication {
+            name = "core-wasm";
+            runtimeInputs = [ (rustToolchainFor system) pkgs.stdenv.cc pkgs.coreutils pkgs.git ];
+            text = ''
+              root="$(git rev-parse --show-toplevel)"
+              cd "$root/firmware/spro-core"
+              cargo build --release --target ${wasmTarget}
+              wasm="target/${wasmTarget}/release/spro_core.wasm"
+              out="$root/sim/src/Sim/CoreWasm.js"
+              {
+                printf '%s\n' '// Generated from firmware/spro-core by nix run .#core-wasm. Do not edit.'
+                printf '%s' 'export const base64 = "'
+                base64 -w0 "$wasm"
+                printf '%s\n' '";'
+              } > "$out"
+              echo "wrote $out"
+            '';
+          };
+        in
+        {
+          core-wasm = {
+            type = "app";
+            program = "${coreWasm}/bin/core-wasm";
           };
         });
 
