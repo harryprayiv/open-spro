@@ -2,6 +2,7 @@
 module Sim.Model
   ( Field(..)
   , Theme(..)
+  , Play(..)
   , State
   , Action(..)
   ) where
@@ -29,6 +30,21 @@ derive instance eqField :: Eq Field
 data Theme = Day | Night
 
 derive instance eqTheme :: Eq Theme
+
+-- | How faithful the simulator is being.
+-- |
+-- | Arcade is for playing with it. The lamps are eased so they glow and
+-- | fade instead of flickering with their elements, the machine's
+-- | display can be pressed to wake the machine, and the warm-up can be
+-- | skipped.
+-- |
+-- | Realistic is for testing against. Nothing is smoothed and nothing
+-- | is offered that a real machine could not do: the lamps follow
+-- | their outputs exactly, the display is only a display, and the
+-- | warm-up takes as long as it takes.
+data Play = Arcade | Realistic
+
+derive instance eqPlay :: Eq Play
 
 type State =
   { -- The machine as last heard from. Everything the page shows about
@@ -71,6 +87,7 @@ type State =
   , draft :: Maybe { key :: String, text :: String }
   , view :: View
   , theme :: Theme
+  , play :: Play
   -- The step the profile designer has open.
   , stepOpen :: Int
   -- The group of parameters the settings show.
@@ -115,6 +132,7 @@ data Action
   | SavePreset
   | DeletePreset String
   | ToggleTheme
+  | TogglePlay
   | GutterDown Edge MouseEvent
   | GutterMove MouseEvent
   | GutterUp

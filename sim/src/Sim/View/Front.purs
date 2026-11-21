@@ -45,6 +45,9 @@ type FrontInput =
   { now :: Number
   -- Whether the page is in its night theme.
   , night :: Boolean
+  -- Whether play is arcade: eased lamps, and a display that can be
+  -- pressed. In realistic play neither.
+  , arcade :: Boolean
   , state :: MachineState
   , brewBar :: Number
   , steamBar :: Number
@@ -73,7 +76,8 @@ type FrontInput =
   , manual :: Boolean
   -- Something on the page's problem list is active.
   , problem :: Boolean
-  , flowMlPerS :: Number
+  -- How fast coffee is reaching the cup, in grams a second.
+  , outFlow :: Number
   -- The colour of the coffee leaving the basket.
   , streamColour :: String
   }
@@ -139,6 +143,7 @@ gold = scheme.gold
 -- | What differs between the day face and the night face.
 type Look =
   { night :: Boolean
+  , arcade :: Boolean
   -- lettering on the face, and the quieter lettering of labels
   , lettering :: String
   , label :: String
@@ -156,10 +161,11 @@ type Look =
   , dark :: String
   }
 
-lookOf :: Boolean -> Look
-lookOf night =
+lookOf :: Boolean -> Boolean -> Look
+lookOf night arcade =
   if night then
     { night
+    , arcade
     , lettering: "#f4eedf"
     , label: "#a39a8d"
     , figure: coolToWarm
@@ -173,6 +179,7 @@ lookOf night =
     }
   else
     { night
+    , arcade
     , lettering: ink
     , label: quiet
     , figure: const ink
@@ -298,15 +305,22 @@ dualGauge k cx cy brew steam =
 
 -- | A lamp: a small dot that is lit or not, with its name under it. A
 -- | lit lamp has a halo, which shows more in the dark.
+-- | The classes of a lamp. In arcade play the stylesheet eases it: it
+-- | comes on quickly and lingers before it fades, so a heater that is
+-- | being pulsed shows as a steady glow and not a flicker. In realistic
+-- | play it follows its output exactly.
+led :: Look -> Boolean -> String
+led k lit = "led" <> (if k.arcade then " eased" else "") <> (if lit then " on" else " off")
+
 lamp :: forall w i. Look -> Number -> Number -> String -> Boolean -> String -> HH.HTML w i
 lamp k x y title lit colour =
   g []
     [ circle
-        [ at "cx" (num x), at "cy" (num y), at "r" "7"
+        [ at "class" (led k lit), at "cx" (num x), at "cy" (num y), at "r" "7"
         , at "fill" colour, at "opacity" (if not lit then "0" else if k.night then "0.3" else "0.16")
         ]
     , circle
-        [ at "cx" (num x), at "cy" (num y), at "r" "3.6"
+        [ at "class" (led k lit), at "cx" (num x), at "cy" (num y), at "r" "3.6"
         , at "fill" (if lit then colour else k.dark)
         , at "stroke" ink, at "stroke-width" "0.6"
         ]
@@ -360,7 +374,7 @@ inkDisplay :: forall w. Look -> Number -> Ink -> HH.HTML w Action
 inkDisplay k now page =
   let
     left = 177.0
-    top = 93.0
+    top = 145.0
     width = 91.0
     height = 52.0
     span = max 1.0 page.span
@@ -470,7 +484,7 @@ inkDisplay k now page =
                 ]
             ]
       in
-        face <> bubble <> Array.mapWithIndex say lines <> [ wake ]
+        face <> bubble <> Array.mapWithIndex say lines <> (if k.arcade then [ wake ] else [])
     sleeping = case Mascot.asleep of
       Just mascot -> character mascot
       Nothing -> snoring
@@ -483,10 +497,15 @@ inkDisplay k now page =
       , z 1 (-11.0) 38.0 "8"
       , z 2 (-1.0) 33.0 "12"
       , z 3 12.0 27.5 "16"
-      , words "4.6" "400" "0.4" "#1c1c1a" 48.5 "press here to wake the machine"
-      , underline 37.0
-      , wake
       ]
+        <>
+          ( if k.arcade then
+              [ words "4.6" "400" "0.4" "#1c1c1a" 48.5 "press here to wake the machine"
+              , underline 37.0
+              , wake
+              ]
+            else []
+          )
     remaining = case page.readyIn of
       Just seconds -> countdown seconds
       Nothing -> "--:--"
@@ -499,13 +518,18 @@ inkDisplay k now page =
           , at "letter-spacing" "0.3", at "fill" "#e3e4dd"
           ]
           ("heating  " <> remaining)
-      , label
-          [ at "x" (num (left + width - 3.0)), at "y" (num (top + height - 2.6)), at "text-anchor" "end", at "font-size" "4.8"
-          , at "font-family" sans, at "letter-spacing" "0.3", at "fill" "#e3e4dd", at "text-decoration" "underline"
-          ]
-          "press to skip"
-      , press "Skip the wait. Only the simulator can do this." SkipWarmUp
       ]
+        <>
+          ( if k.arcade then
+              [ label
+                  [ at "x" (num (left + width - 3.0)), at "y" (num (top + height - 2.6)), at "text-anchor" "end", at "font-size" "4.8"
+                  , at "font-family" sans, at "letter-spacing" "0.3", at "fill" "#e3e4dd", at "text-decoration" "underline"
+                  ]
+                  "press to skip"
+              , press "Skip the wait. Only the simulator can do this." SkipWarmUp
+              ]
+            else []
+          )
     warming =
       [ words "5" "400" "1.6" "#55564f" 11.0 "WARMING UP"
       , line
@@ -514,10 +538,15 @@ inkDisplay k now page =
           ]
       , words "17" "300" "0.5" "#1c1c1a" 33.0 remaining
       , words "4.6" "400" "0.4" "#55564f" 41.5 "until the machine is ready"
-      , words "4.6" "400" "0.4" "#1c1c1a" 48.5 "press here to skip the wait"
-      , underline 30.0
-      , press "Skip the warm-up. Only the simulator can do this." SkipWarmUp
       ]
+        <>
+          ( if k.arcade then
+              [ words "4.6" "400" "0.4" "#1c1c1a" 48.5 "press here to skip the wait"
+              , underline 30.0
+              , press "Skip the warm-up. Only the simulator can do this." SkipWarmUp
+              ]
+            else []
+          )
     shotView =
       concat (mapWithIndex band page.bands)
         <> limits
@@ -549,7 +578,7 @@ inkDisplay k now page =
       else []
   in
     g []
-      ( [ rect [ at "x" "172", at "y" "88", at "width" "101", at "height" "62", at "rx" "3", at "fill" window ]
+      ( [ rect [ at "x" "172", at "y" "140", at "width" "101", at "height" "62", at "rx" "3", at "fill" window ]
         , rect [ at "x" (num left), at "y" (num top), at "width" (num width), at "height" (num height), at "fill" "#e3e4dd" ]
         ]
           <>
@@ -566,15 +595,15 @@ inkDisplay k now page =
             )
       )
 
--- | The window over the middle of the fader: the value the fader is
+-- | The window under the fader: the value the fader is
 -- | at. What the value is a value of is in the selector's window beside
 -- | it.
 faderWindow :: forall w i. Look -> String -> Number -> HH.HTML w i
 faderWindow k value fraction =
   g []
-    [ rect [ at "x" "154", at "y" "200", at "width" "92", at "height" "28", at "rx" "2", at "fill" window ]
+    [ rect [ at "x" "104", at "y" "96", at "width" "92", at "height" "28", at "rx" "2", at "fill" window ]
     , label
-        [ at "x" "200", at "y" "220", at "text-anchor" "middle"
+        [ at "x" "150", at "y" "116", at "text-anchor" "middle"
         , at "font-size" "15", at "font-family" "monospace", at "fill" (k.lit fraction)
         ]
         value
@@ -592,7 +621,7 @@ selector k mode =
     before = nextFaderMode next
     groove i =
       let
-        gy = 203.5 + 3.5 * toNumber i
+        gy = 99.5 + 3.5 * toNumber i
       in
         line [ at "x1" "9", at "x2" "29", at "y1" (num gy), at "y2" (num gy), at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
     neighbour y text =
@@ -603,18 +632,18 @@ selector k mode =
         (toLower (faderWord text))
   in
     g []
-      ( [ rect [ at "x" "8", at "y" "200", at "width" "22", at "height" "28", at "rx" "2.5", at "fill" k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
+      ( [ rect [ at "x" "8", at "y" "96", at "width" "22", at "height" "28", at "rx" "2.5", at "fill" k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
         , g [] (map groove (range 0 6))
-        , rect [ at "x" "40", at "y" "200", at "width" "56", at "height" "28", at "rx" "2", at "fill" window ]
-        , neighbour "206.5" before
+        , rect [ at "x" "40", at "y" "96", at "width" "56", at "height" "28", at "rx" "2", at "fill" window ]
+        , neighbour "102.5" before
         , label
-            [ at "x" "68", at "y" "217", at "text-anchor" "middle", at "font-size" "8", at "font-family" sans
+            [ at "x" "68", at "y" "113", at "text-anchor" "middle", at "font-size" "8", at "font-family" sans
             , at "letter-spacing" "0.6", at "fill" (if mode == OnTime then "#ff4d3d" else paper)
             ]
             (toLower (faderWord mode))
-        , neighbour "226" next
+        , neighbour "122" next
         , HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "rect")
-            [ HP.attr (AttrName "x") "4", HP.attr (AttrName "y") "196"
+            [ HP.attr (AttrName "x") "4", HP.attr (AttrName "y") "92"
             , HP.attr (AttrName "width") "96", HP.attr (AttrName "height") "36"
             , HP.attr (AttrName "fill") "transparent"
             , HP.attr (AttrName "class") "fader-press"
@@ -640,6 +669,11 @@ stateColour = case _ of
   Ready -> leds.ready
   Faulted -> leds.fault
 
+asleep :: MachineState -> Boolean
+asleep = case _ of
+  Sleeping -> true
+  _ -> false
+
 faulted :: MachineState -> Boolean
 faulted = case _ of
   Faulted -> true
@@ -651,7 +685,7 @@ fill = at "fill"
 front :: forall w. FrontInput -> HH.HTML w Action
 front v =
   let
-    k = lookOf v.night
+    k = lookOf v.night v.arcade
     -- how far along a scale of temperature a reading is
     warmth low high c = clamp 0.0 1.0 ((c - low) / (high - low))
     phase = v.now * 2.0 - floor (v.now * 2.0)
@@ -670,20 +704,38 @@ front v =
         mx = 60.5 + 27.9 * toNumber i
       in
         g []
-          ( [ line [ at "x1" (num mx), at "x2" (num mx), at "y1" "255", at "y2" (if i `mod` 5 == 0 then "260" else "258"), at "stroke" "#b9bec4", at "stroke-width" "0.8" ] ]
+          ( [ line [ at "x1" (num mx), at "x2" (num mx), at "y1" "81", at "y2" (if i `mod` 5 == 0 then "86" else "84"), at "stroke" "#b9bec4", at "stroke-width" "0.8" ] ]
               <>
                 if i `mod` 5 == 0 then
-                  [ label [ at "x" (num mx), at "y" "243", at "text-anchor" "middle", at "font-size" "6", at "font-family" sans, at "letter-spacing" "0.4", fill "#b9bec4" ] (reading i) ]
+                  [ label [ at "x" (num mx), at "y" "69", at "text-anchor" "middle", at "font-size" "6", at "font-family" sans, at "letter-spacing" "0.4", fill "#b9bec4" ] (reading i) ]
                 else []
           )
     fraction = clamp 0.0 1.0 (v.cupGrams / max 1.0 v.targetGrams)
     top = 392.0 - 36.0 * fraction
-    -- stream: half its width, how far it spreads across the basket and
-    -- a slight side-to-side wander
-    half = clamp 1.5 5.5 (1.2 + v.flowMlPerS * 0.9)
-    spread = clamp 14.0 44.0 (16.0 + v.flowMlPerS * 9.0)
+    -- The pour, from 0 to 1: how fast coffee is reaching the cup,
+    -- against the 2 g a second of a full spout. Everything under the
+    -- basket is drawn from this one number. Near 0 there are slow,
+    -- small drips. As it rises the drips come faster and fatter.
+    -- From 0.4 they have run together into a thread, which thickens
+    -- into the full cone and column at 1. Turn the flow down during a
+    -- shot and the column thins and breaks back into drips.
+    pour = if v.pouring then clamp 0.0 1.0 (v.outFlow / 2.0) else 0.0
+    threaded = pour >= 0.4
+    thick = clamp 0.0 1.0 ((pour - 0.4) / 0.6)
+    -- the column: half its width, how far the cone spreads across the
+    -- basket, and a slight side-to-side wander
+    half = 0.8 + 4.7 * thick
+    spread = 10.0 + 34.0 * thick
     sway = if phase < 0.5 then 0.0 else 0.5
     inset y = (394.0 - y) * 6.0 / 42.0
+    paddle = "M138,316.5 L118,316 C100,315.5 88,309 68,309 C55,309 46,313.5 46,319.5 C46,325.5 55,330 68,330 C88,330 100,323.5 118,323 L138,322.5 Z"
+    -- the top of the coffee, as far down as the crema reaches
+    creamTo = top + min 14.0 ((392.0 - top) * 0.55)
+    crema =
+      "M" <> num (178.0 - inset top) <> "," <> num top
+        <> " L" <> num (222.0 + inset top) <> "," <> num top
+        <> " L" <> num (222.0 + inset creamTo) <> "," <> num creamTo
+        <> " L" <> num (178.0 - inset creamTo) <> "," <> num creamTo <> " Z"
     coffee =
       "M" <> num (178.0 - inset top) <> "," <> num top
         <> " L" <> num (222.0 + inset top) <> "," <> num top
@@ -694,23 +746,55 @@ front v =
     -- pressure behind it, from nothing at 1 bar to its fullest at 9,
     -- and with how hot the water is, from nothing at 70 C to its
     -- fullest at 90. A soak at low pressure wets the puck and shows
-    -- nothing here. The first gram or so leaves the bulge as drips.
-    -- Then the stream takes over, and the bulge is drawn down into it
-    -- over the first 4 g in the cup.
+    -- nothing here. As the pour grows the bulge is drawn down into
+    -- it, and it comes back if the flow is turned down with pressure
+    -- still behind it.
     swell =
       if v.running then
         clamp 0.0 1.0 ((v.brewBar - 1.0) / 8.0)
           * clamp 0.0 1.0 ((v.waterC - 70.0) / 20.0)
-          * clamp 0.0 1.0 (1.0 - v.cupGrams / 4.0)
+          * clamp 0.0 1.0 (1.0 - pour * 1.5)
       else 0.0
-    -- The stream proper starts once the drips have run together.
-    streaming = v.pouring && v.cupGrams > 1.2
+    -- Drips, while the pour is too slow to hold together. They leave
+    -- the lowest point under the basket and fall to the coffee in the
+    -- cup. There are more of them in the air, and they are fatter, the
+    -- faster the pour: one at a crawl, then two, then three.
+    drips hang =
+      if pour < 0.02 || threaded then []
+      else
+        let
+          count = if pour < 0.12 then 1 else if pour < 0.26 then 2 else 3
+          -- how many times a second one of them makes the fall
+          rate = if pour < 0.06 then 0.6 else if pour < 0.12 then 1.0 else 1.4
+          size = 0.7 + 1.5 * pour
+          from = 338.0 + hang
+          place i =
+            let
+              along = v.now * rate + toNumber i / toNumber count
+            in
+              from + (top - from) * (along - floor along)
+          drip i =
+            let
+              at' = place i
+            in
+              path
+                [ at "d"
+                    ( "M200," <> num (at' - 3.2 * size) <> " Q" <> num (200.0 + 2.2 * size) <> "," <> num (at' + 0.6 * size) <> " 200,"
+                        <> num (at' + 1.6 * size) <> " Q" <> num (200.0 - 2.2 * size) <> "," <> num (at' + 0.6 * size) <> " 200,"
+                        <> num (at' - 3.2 * size) <> " Z"
+                    )
+                , fill v.streamColour
+                ]
+        in
+          map drip (range 0 (count - 1))
+    -- how far the bulge hangs below the basket
+    hangs = if swell <= 0.0 then 0.0 else (0.6 + 9.0 * swell) * (if phase < 0.5 then 1.0 else 1.06)
     bulge =
       if swell <= 0.0 then []
       else
         let
           -- it trembles a little as it hangs
-          depth = (0.6 + 9.0 * swell) * (if phase < 0.5 then 1.0 else 1.06)
+          depth = hangs
           reach = 8.0 + 30.0 * swell
           bead x =
             let
@@ -729,24 +813,6 @@ front v =
                   , fill v.streamColour
                   ]
               ]
-            <>
-              -- drips off the lowest point of it, until the stream starts
-              ( if v.pouring && not streaming then
-                  let
-                    from = 338.0 + depth
-                    fall offset = from + (top - from) * (phase + offset - floor (phase + offset))
-                    drip offset =
-                      path
-                        [ at "d"
-                            ( "M200," <> num (fall offset - 3.2) <> " Q202.2," <> num (fall offset + 0.6) <> " 200,"
-                                <> num (fall offset + 1.6) <> " Q197.8," <> num (fall offset + 0.6) <> " 200," <> num (fall offset - 3.2) <> " Z"
-                            )
-                        , fill v.streamColour
-                        ]
-                  in
-                    [ drip 0.0, drip 0.5 ]
-                else []
-              )
             <>
               -- a glint on it, since it is wet
               [ path
@@ -801,6 +867,7 @@ front v =
             , glow "dial-light" "#e88a22" 0.26
             , glow "pool" "#ffe9c4" 0.75
             , falling "beam" "#ffe9c4" 0.5 0.06
+            , falling "crema" "#e0b072" 0.95 0.0
             ]
         ]
           -- the counter
@@ -848,34 +915,37 @@ front v =
                 , at "stroke" (if faulted v.state then bad else if v.night then "#3a3632" else "#55595d")
                 , at "stroke-width" (if faulted v.state then "5" else "1")
                 ]
-            , dualGauge k 104.0 128.0
+            , dualGauge k 104.0 200.0
                 { most: 12, labelEvery: 2, redFrom: 11.0, value: v.brewBar }
                 { most: 3, labelEvery: 1, redFrom: 2.3, value: v.steamBar }
             -- the machine's state: a dot and a word
-            , circle [ at "cx" "196", at "cy" "79", at "r" "3", fill (stateColour v.state) ]
+            , circle [ at "class" (led k true), at "cx" "214", at "cy" "110", at "r" "3", fill (stateColour v.state) ]
             , label
-                [ at "x" "204", at "y" "81.5", at "font-size" "7.5", at "font-family" sans
+                [ at "x" "222", at "y" "112.5", at "font-size" "7.5", at "font-family" sans
                 , at "letter-spacing" "0.5", fill k.lettering
                 ]
                 (stateText v.state)
             , inkDisplay k v.now v.ink
             , faderWindow k v.faderValue v.fader
             -- the three temperatures, one over the other
-            , readout k 96.0 "reservoir" (num v.reservoirC) (warmth 20.0 110.0 v.reservoirC)
-            , readout k 119.0 "group" (num v.groupC) (warmth 20.0 100.0 v.groupC)
-            , readout k 142.0 "water" (num v.waterC) (warmth 20.0 100.0 v.waterC)
+            , readout k 148.0 "reservoir" (num v.reservoirC) (warmth 20.0 110.0 v.reservoirC)
+            , readout k 171.0 "group" (num v.groupC) (warmth 20.0 100.0 v.groupC)
+            , readout k 194.0 "water" (num v.waterC) (warmth 20.0 100.0 v.waterC)
             -- the lamps, in a row
-            , lamp k 200.0 172.0 "reservoir" v.brewElementOn leds.working
-            , lamp k 240.0 172.0 "steam" v.steamElementOn leds.working
-            , lamp k 280.0 172.0 "group" v.groupHeaterOn leds.working
-            , lamp k 330.0 172.0 "problem" v.problem leds.fault
-            -- the fader: a black strip across the front with a slot in
-            -- it and a scale. The cap is the slider laid over this
-            -- drawing by the page, so it can be taken in hand.
-            , rect [ at "x" "46", at "y" "234", at "width" "308", at "height" "30", at "rx" "3", fill window ]
-            , rect [ at "x" "56", at "y" "245", at "width" "288", at "height" "8", at "rx" "4", fill "#000000", at "stroke" "#3a3d40", at "stroke-width" "0.8" ]
+            , lamp k 200.0 232.0 "reservoir" v.brewElementOn leds.working
+            , lamp k 240.0 232.0 "steam" v.steamElementOn leds.working
+            , lamp k 280.0 232.0 "group" v.groupHeaterOn leds.working
+            , lamp k 330.0 232.0 "problem" v.problem leds.fault
+            -- The fader: a black strip with a slot in it and a scale,
+            -- across the top of the face, as far from the group and
+            -- its heat as the face allows. The cap is the slider laid
+            -- over this drawing by the page, so it can be taken in
+            -- hand. The stylesheet places that slider and has to agree
+            -- with where the strip is drawn.
+            , rect [ at "x" "46", at "y" "60", at "width" "308", at "height" "30", at "rx" "3", fill window ]
+            , rect [ at "x" "56", at "y" "71", at "width" "288", at "height" "8", at "rx" "4", fill "#000000", at "stroke" "#3a3d40", at "stroke-width" "0.8" ]
             , rect
-                [ at "x" "58", at "y" "247.5", at "width" (num (max 0.0 (capX - 58.0))), at "height" "3", at "rx" "1.5"
+                [ at "x" "58", at "y" "73.5", at "width" (num (max 0.0 (capX - 58.0))), at "height" "3", at "rx" "1.5"
                 , fill (if v.manual then leds.byHand else if v.running then k.lit v.fader else "#3a3d40")
                 ]
             , g [] (map mark (range 0 10))
@@ -897,16 +967,42 @@ front v =
                 ]
               else []
             )
+          <>
+            -- The scale's display, up on the backsplash and clear of
+            -- the tray, where water goes.
+            [ rect [ at "x" "257", at "y" "280.5", at "width" "50", at "height" "16", at "rx" "2", fill window, at "stroke" "#3a3d40", at "stroke-width" "0.6" ]
+            , label
+                [ at "x" "282", at "y" "292.3", at "text-anchor" "middle", at "font-size" "10"
+                , at "font-family" "monospace", fill (k.lit (clamp 0.0 1.0 (v.cupGrams / max 1.0 v.targetGrams)))
+                ]
+                (num v.cupGrams <> " g")
+            ]
           <> steel k [ at "x" "84", at "y" "276", at "width" "5", at "height" "124" ]
           <> steel k [ at "x" "311", at "y" "276", at "width" "5", at "height" "124" ]
           -- group and portafilter
           <> steel k [ at "x" "150", at "y" "276", at "width" "100", at "height" "22", at "rx" "2" ]
           <>
             -- The button on the group: it starts the profile, and stops
-            -- a shot that is running.
+            -- a shot that is running. It is a plain steel button with
+            -- no light in it.
             [ rect [ at "x" "150", at "y" "276", at "width" "100", at "height" "22", at "rx" "2", fill "none", at "stroke" steelEdge, at "stroke-width" "0.8" ]
-            , circle [ at "cx" "200", at "cy" "287", at "r" "7.5", fill ink ]
-            , circle [ at "cx" "200", at "cy" "287", at "r" "3.2", fill (if v.running then leds.working else leds.ready) ]
+            , circle [ at "cx" "200", at "cy" "287", at "r" "7.5", fill k.metalEdge ]
+            , circle [ at "cx" "200", at "cy" "287", at "r" "6.2", fill k.metal ]
+            , circle [ at "cx" "200", at "cy" "287", at "r" "4.2", fill "none", at "stroke" k.metalEdge, at "stroke-width" "0.5" ]
+            -- The lamp beside it says whether the machine will pull a
+            -- shot: dark asleep, the working colour while it heats,
+            -- the ready colour when it will, beating while a shot
+            -- runs, and the fault colour when it will not.
+            , circle [ at "cx" "226", at "cy" "287", at "r" "4.4", fill ink ]
+            , circle
+                [ at "class" (led k (not (asleep v.state)) <> (if v.running then " beat" else ""))
+                , at "cx" "226", at "cy" "287", at "r" "2.9"
+                , fill case v.state of
+                    Sleeping -> k.dark
+                    Heating -> leds.working
+                    Ready -> leds.ready
+                    Faulted -> leds.fault
+                ]
             , HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "circle")
                 [ HP.attr (AttrName "cx") "200", HP.attr (AttrName "cy") "287", HP.attr (AttrName "r") "13"
                 , HP.attr (AttrName "fill") "transparent"
@@ -915,10 +1011,15 @@ front v =
                 ]
                 [ HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "title") [] [ HH.text (if v.running then "Stop the shot" else "Run the profile") ] ]
             ]
-          -- the portafilter: a long cedar handle, a wide ring and the
-          -- underside of a bottomless basket
-          <> faced "wood" "#1a110c" [ at "x" "52", at "y" "312", at "width" "96", at "height" "14", at "rx" "7" ]
-          <> [ rect [ at "x" "52", at "y" "312", at "width" "96", at "height" "14", at "rx" "7", fill "#120c08", at "opacity" "0.55" ] ]
+          -- the portafilter: a flat wooden paddle of a handle, slim at
+          -- the neck where a steel ferrule holds it and broad at the
+          -- end; a wide ring; and the underside of a bottomless basket
+          <>
+            [ path [ at "d" paddle, fill "#1a110c" ]
+            , path [ at "d" paddle, fill "url(#wood)" ]
+            , path [ at "d" paddle, fill "#120c08", at "opacity" "0.45", at "stroke" "#0c0806", at "stroke-width" "0.6" ]
+            , rect [ at "x" "128", at "y" "314.5", at "width" "12", at "height" "10", at "rx" "1", fill k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.6" ]
+            ]
           <> steel k [ at "x" "142", at "y" "298", at "width" "116", at "height" "13" ]
           <>
             [ rect [ at "x" "138", at "y" "311", at "width" "124", at "height" "17", at "rx" "2", fill ink ]
@@ -942,16 +1043,13 @@ front v =
             [ rect [ at "x" "80", at "y" "400", at "width" "240", at "height" "26", at "rx" "2", fill "none", at "stroke" steelEdge, at "stroke-width" "0.8" ]
             , rect [ at "x" "150", at "y" "394", at "width" "100", at "height" "6", fill "#c5cace", at "stroke" steelEdge, at "stroke-width" "0.6" ]
             , path [ at "d" "M172,352 L228,352 L222,394 L178,394 Z", fill "#f4f1ea", at "stroke" "#8a8378", at "stroke-width" "1.5" ]
-            , path [ at "d" coffee, fill "#5a3a22" ]
-            , rect [ at "x" "170", at "y" "404", at "width" "60", at "height" "16", at "rx" "2", fill window ]
-            , label
-                [ at "x" "200", at "y" "416", at "text-anchor" "middle", at "font-size" "11"
-                , at "font-family" "monospace", fill paper
-                ]
-                (num v.cupGrams <> " g")
+            , path [ at "d" coffee, fill "#4a2d18" ]
+            -- The crema: the coffee is lighter towards its top, most of
+            -- all in the top third.
+            , path [ at "d" crema, fill "url(#crema)" ]
             ]
           <>
-            ( if streaming then
+            ( if threaded then
                 -- the streams off the basket gather into one cone, then
                 -- fall as a single column that fattens with the flow
                 [ path
@@ -969,5 +1067,6 @@ front v =
               else []
             )
           <> bulge
+          <> drips hangs
           <> steam
       )

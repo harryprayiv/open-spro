@@ -30,7 +30,7 @@ import Sim.Layout (BenchTab(..), Edge(..), Tab(..), benchTabs, benchTitle, defau
 import Sim.Layout as Layout
 import Sim.Palette as Palette
 import Sim.Forecast (forecast)
-import Sim.Model (Action(..), State, Theme(..))
+import Sim.Model (Action(..), Play(..), State, Theme(..))
 import Sim.Params (Group(..))
 import Sim.Params as Params
 import Sim.Problems (anyProblem, problems)
@@ -54,6 +54,9 @@ viewKey = "espresso-sim.view"
 
 themeKey :: String
 themeKey = "espresso-sim.theme"
+
+playKey :: String
+playKey = "espresso-sim.play"
 
 shapesKey :: String
 shapesKey = "espresso-sim.shapes"
@@ -89,6 +92,7 @@ component =
         , draft: Nothing
         , view: defaultView
         , theme: Day
+        , play: Arcade
         , stepOpen: 0
         , paramGroup: Loops
         , wanted: Nothing
@@ -137,6 +141,7 @@ handleAction = case _ of
     recipes <- H.liftEffect (Store.load recipesKey)
     view <- H.liftEffect (Store.load viewKey)
     theme <- H.liftEffect (Store.load themeKey)
+    play <- H.liftEffect (Store.load playKey)
     shapes <- H.liftEffect (Store.load shapesKey)
     params <- H.liftEffect (Store.load paramsKey)
     locks <- H.liftEffect (Store.load locksKey)
@@ -146,6 +151,7 @@ handleAction = case _ of
       { saved = maybe [] Recipe.decode recipes
       , view = maybe defaultView Layout.decode view
       , theme = if theme == Just "night" then Night else Day
+      , play = if play == Just "realistic" then Realistic else Arcade
       , shapes = maybe [] Shapes.decode shapes
       , sizes = maybe defaultSizes Layout.decodeSizes sizes
       , locks = maybe defaultLocks (filter (_ /= "") <<< split (Pattern ",")) locks
@@ -201,6 +207,12 @@ handleAction = case _ of
         }
   DeletePreset name ->
     changeAndStore \st -> st { saved = filter (\r -> r.name /= name) st.saved }
+  TogglePlay -> do
+    st <- H.get
+    let play = if st.play == Arcade then Realistic else Arcade
+    H.liftEffect (Store.save playKey (if play == Realistic then "realistic" else "arcade"))
+    H.modify_ _ { play = play }
+
   ToggleTheme -> do
     st <- H.get
     let theme = if st.theme == Day then Night else Day
@@ -273,6 +285,15 @@ render st =
             else HH.text ""
           , HH.span [ cls "notice" ] [ HH.text st.notice ]
           , chosen open "Bench" (Change _ { view = st.view { benchOpen = not open } })
+          , HH.button
+              [ cls ("play-switch" <> (if st.play == Realistic then " realistic" else ""))
+              , HP.title
+                  ( if st.play == Realistic then "Realistic: nothing smoothed, nothing a real machine could not do. Click for arcade."
+                    else "Arcade: eased lamps, a display that can be pressed, a warm-up that can be skipped. Click for realistic."
+                  )
+              , HE.onClick \_ -> TogglePlay
+              ]
+              [ HH.text (if st.play == Realistic then "realistic" else "arcade") ]
           , HH.button
               [ cls ("theme-switch" <> (if night then " night" else ""))
               , HP.title "Day or night"

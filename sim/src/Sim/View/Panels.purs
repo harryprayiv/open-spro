@@ -5,6 +5,7 @@ module Sim.View.Panels (machineView, brew, cup, faults, readings) where
 import Prelude
 
 import Data.Array (findIndex, index, last, length, mapWithIndex, null, reverse, take)
+import Data.Array as Array
 import Data.Array.NonEmpty as NEA
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Number as Number
@@ -19,7 +20,7 @@ import Sim.Link (Event(..), FaderMode(..), faderScale)
 import Sim.Machine (Machine, silence)
 import Sim.Invariants (checks)
 import Sim.Layout (Edge(..), upright)
-import Sim.Model (Action(..), Field(..), State, Theme(..))
+import Sim.Model (Action(..), Field(..), Play(..), State, Theme(..))
 import Sim.Problems (Problems, anyProblem)
 import Sim.Recipe (Recipe, Roast, roastLabel, roastNote, roasts, samples, targetGrams)
 import Sim.Types (ClientKind(..), FaultKind(..), PowerMode(..), Shot)
@@ -50,6 +51,7 @@ machineView st wrong =
     sim = simView st
     scale = faderScale c.faderMode
     held = isJust (c.shot >>= _.manual) || isJust (c.shot >>= _.manualC)
+    recent = Array.takeEnd 6 m.trace
   in
     [ nowPlaying st
     , HH.div [ cls "views" ]
@@ -58,6 +60,7 @@ machineView st wrong =
             [ front
             { now: m.at
             , night: st.theme == Night
+            , arcade: st.play == Arcade
             , state: c.state
             , brewBar: s.brewBar
             , steamBar: s.steamBar
@@ -82,7 +85,11 @@ machineView st wrong =
             , running: isJust c.shot
             , manual: held
             , problem: anyProblem wrong
-            , flowMlPerS: c.flowMlPerS
+            -- How fast coffee is reaching the cup, in grams a second,
+            -- over the last few samples of the shot.
+            , outFlow: case c.shot, Array.head recent, Array.last recent of
+                Just _, Just first, Just latest | latest.t > first.t -> max 0.0 ((latest.grams - first.grams) / (latest.t - first.t))
+                _, _, _ -> 0.0
             -- The colour of the stream is read off the simulated puck.
             -- A real machine cannot see it.
             , streamColour: Cup.streamColour st.recipe.roast sim.puck.extracted sim.puck.evenness c.flowMlPerS
@@ -198,13 +205,16 @@ brew st =
             )
         ]
     , section "Machine"
-        [ button "Wake, brew" (Send (WakeRequested BrewReady))
-        , button "Wake, brew and steam" (Send (WakeRequested Full))
-        , button "Sleep" (Send SleepRequested)
-        , segmented (map (\speed -> chosen (sim.speed == speed) (show speed <> "x") (SetSpeed speed)) [ 1, 10, 60 ])
-        , button "Skip warm-up" SkipWarmUp
-        , button "Reset" Reset
-        ]
+        ( [ button "Wake, brew" (Send (WakeRequested BrewReady))
+          , button "Wake, brew and steam" (Send (WakeRequested Full))
+          , button "Sleep" (Send SleepRequested)
+          , segmented (map (\speed -> chosen (sim.speed == speed) (show speed <> "x") (SetSpeed speed)) [ 1, 10, 60 ])
+          ]
+            -- Only the simulator can skip a warm-up, so realistic play
+            -- does not offer it.
+            <> (if st.play == Arcade then [ button "Skip warm-up" SkipWarmUp ] else [])
+            <> [ button "Reset" Reset ]
+        )
     ]
 
 -- | The beans in use, shown over the machine while it is in use.

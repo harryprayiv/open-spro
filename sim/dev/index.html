@@ -95,7 +95,7 @@
       .fader-wrap .fader {
         position: absolute; margin: 0; cursor: grab;
         left: calc(0.5rem + (100% - 1rem) * 0.125); width: calc((100% - 1rem) * 0.75);
-        top: calc(0.5rem + (100% - 1rem) * 0.5315); height: calc((100% - 1rem) * 0.0586);
+        top: calc(0.5rem + (100% - 1rem) * 0.1396); height: calc((100% - 1rem) * 0.0586);
       }
       .fader-wrap .fader:active { cursor: grabbing; }
       .fader-wrap .fader.shows-only, .fader-wrap .fader.shows-only:active { cursor: not-allowed; }
@@ -129,6 +129,17 @@
       @keyframes snore-1 { 0% { opacity: 0; } 15% { opacity: 1; } 90% { opacity: 0; } }
       @keyframes snore-2 { 0% { opacity: 0; } 35% { opacity: 1; } 90% { opacity: 0; } }
       @keyframes snore-3 { 0% { opacity: 0; } 55% { opacity: 1; } 90% { opacity: 0; } }
+      /* The lamps on the machine. In arcade play they are eased: on
+         quickly, and off slowly after a pause, so a heater being pulsed
+         glows steadily. In realistic play they have no easing and show
+         exactly what the output is doing. */
+      .led.eased { transition: fill 0.2s ease, opacity 0.2s ease; }
+      .led.eased.off { transition: fill 1.1s ease 0.8s, opacity 1.1s ease 0.8s; }
+      .led.beat { animation: led-beat 1.3s ease-in-out infinite; }
+      @keyframes led-beat { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+      /* Arcade or realistic, in the top bar. */
+      .play-switch { min-width: 5.6rem; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.66rem; letter-spacing: 0.18em; text-transform: uppercase; }
+      .play-switch.realistic { background: var(--key); color: var(--key-ink); }
       /* The steam lever. It is drawn standing up, and pulled it flips
          about the slot it stands in, passing through no length at all,
          which is what an arm swinging towards you looks like from the
