@@ -11,7 +11,7 @@ import Data.String (joinWith)
 import Halogen.HTML as HH
 import Sim.Forecast (Forecast)
 import Sim.View.Svg (at, circle, label, line, num, polyline, rect, svg)
-import Sim.World (ScopeSample)
+import Sim.Link (ScopeSample)
 
 width :: Number
 width = 600.0

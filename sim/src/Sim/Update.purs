@@ -25,8 +25,13 @@ module Sim.Update
   , changeParams
   , resetParams
   , refreshForecast
-  , frame
+  , simView
+  , sim
+  , request
+  , tick
+  , hear
   , skipWarmUp
+  , reset
   ) where
 
 import Prelude
@@ -36,10 +41,13 @@ import Data.Foldable (foldl)
 import Data.Int (toNumber)
 import Data.Number (abs)
 import Data.Array.NonEmpty as NEA
-import Data.Either (Either(..))
-import Data.Maybe (Maybe(..), fromMaybe, isNothing)
-import Sim.Controller (Event(..), shotInProgress)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
 import Sim.Advice (advise)
+import Sim.Backend (SimCommand(..), SimView)
+import Sim.Backend as Backend
+import Sim.Link (Event(..), Message(..), eventLabel)
+import Sim.Machine (Outcome(..), Pending)
+import Sim.Machine as Machine
 import Sim.Forecast (forecast)
 import Sim.Model (Field(..), State)
 import Sim.Params (Params)
@@ -48,7 +56,6 @@ import Sim.Profiles as Profiles
 import Sim.Recipe (Limits, Recipe, Roast, doseLimits, grindLimits, puckOf, ratioLimits, secondsLimits, soakLimits, targetGrams, targetLimits, tempLimits, toProfile, withRoastDefaults, withTarget)
 import Sim.Shapes as Shapes
 import Sim.Types (MachineState(..), PowerMode(..), Profile, ShotState(..))
-import Sim.World (paramsOf, send, setParams, stepMany, warmUp)
 
 ------------------------------------------------------------
 -- Shapes and recipes
@@ -74,17 +81,42 @@ baseShape st = fromMaybe (NEA.head Profiles.all) (index (allShapes st) st.recipe
 tempShift :: State -> Number
 tempShift st = st.recipe.tempC - (baseShape st).maxTargetC
 
--- | Hand a changed recipe to the controller as a profile. The controller
--- | refuses during a shot or a fault, and then the recipe stays as it was.
+-- | The simulator's own view of the machine. Views read this for what
+-- | no machine could report, and for nothing else.
+simView :: State -> SimView
+simView st = Backend.view st.backend
+
+-- | Tell the simulator to do something only a simulator can.
+sim :: SimCommand -> State -> State
+sim cmd st = st { backend = Backend.command cmd st.backend }
+
+-- | Send a request to the machine and remember it until it is answered.
+ask :: Event -> Maybe Recipe -> State -> State
+ask event before st =
+  let
+    asked = Machine.ask st.clock event before st.machine
+  in
+    st { machine = asked.machine, backend = Backend.request asked.request st.backend }
+
+-- | A request from a key on the page. The answer comes later: a
+-- | refusal shows as a notice when it arrives.
+request :: Event -> State -> State
+request event st = case event of
+  -- A shot is watched in real time.
+  ShotRequested -> sim (SetSpeed 1) (ask event Nothing st { notice = "" })
+  _ -> ask event Nothing st { notice = "" }
+
+-- | Change the recipe and send it to the machine as a profile. The
+-- | page takes the change at once, so a slider does not wait on the
+-- | link. If the machine as last heard would refuse it, the page says
+-- | so without asking. If the machine refuses it after all, or never
+-- | answers, the recipe goes back to what it was.
 applyRecipe :: Recipe -> State -> State
-applyRecipe recipe st =
-  case send (ProfileSelected (toProfile (allShapes st) recipe)) st.world of
-    Left reason -> st { notice = "Rejected: " <> reason }
-    Right world -> st
-      { recipe = recipe
-      , world = world { puck = puckOf recipe }
-      , notice = ""
-      }
+applyRecipe recipe st = case Machine.busy st.machine of
+  Just reason -> st { notice = "Rejected: " <> reason }
+  Nothing ->
+    sim (LoadPuck (puckOf recipe))
+      (ask (ProfileSelected (toProfile (allShapes st) recipe)) (Just st.recipe) st { recipe = recipe, notice = "", resend = false })
 
 limitsOf :: Field -> Limits
 limitsOf = case _ of
@@ -144,7 +176,7 @@ findGrind st recipe =
     miss grind =
       let
         r = recipe { grind = grind, paced = false }
-        f = forecast (paramsOf st.world) (toProfile (allShapes st) r) (puckOf r)
+        f = forecast st.params (toProfile (allShapes st) r) (puckOf r)
       in
         if f.outcome == Just StoppedByWeight then abs (f.seconds - recipe.seconds) else 1000.0
     best = foldl (\acc grind -> let m = miss grind in if m < acc.miss then { grind, miss: m } else acc) { grind: recipe.grind, miss: miss recipe.grind } candidates
@@ -196,7 +228,7 @@ chooseShape i st = applyRecipe st.recipe { profileIndex = i } st
 -- | A shape cannot change under a running shot.
 guarded :: (State -> State) -> State -> State
 guarded change st =
-  if shotInProgress st.world.ctl then st { notice = "Rejected: a shot is running" }
+  if isJust st.machine.status.shot then st { notice = "Rejected: a shot is running" }
   else change st
 
 -- | Change the selected shape. Editing a built-in shape first makes a
@@ -250,8 +282,15 @@ deleteShape = guarded \st ->
 -- Parameters
 ------------------------------------------------------------
 
+-- | Change the parameters. The page keeps them for the forecast and the
+-- | simulated machine takes them at once. How a real machine is given
+-- | its limits and gains is not decided (spec open question 10).
 changeParams :: (Params -> Params) -> State -> State
-changeParams change st = st { world = setParams (change (paramsOf st.world)) st.world }
+changeParams change st =
+  let
+    params = change st.params
+  in
+    sim (SetParams params) st { params = params }
 
 resetParams :: State -> State
 resetParams = changeParams (const Params.defaults)
@@ -260,13 +299,15 @@ resetParams = changeParams (const Params.defaults)
 -- Forecast
 ------------------------------------------------------------
 
--- | Run the present recipe on a warm copy of the present machine.
--- | Advice that was worked out for another recipe, or for a machine
--- | that forecast this one differently, is dropped.
+-- | Run the present recipe on a model of the machine with the page's
+-- | parameters. The model is the same controller core and the same
+-- | simulated plant, run on the page, whatever the page is linked to.
+-- | Advice that was worked out for another recipe, or for a model that
+-- | forecast this one differently, is dropped.
 refreshForecast :: State -> State
 refreshForecast st =
   let
-    now = forecast (paramsOf st.world) (toProfile (allShapes st) st.recipe) (puckOf st.recipe)
+    now = forecast st.params (toProfile (allShapes st) st.recipe) (puckOf st.recipe)
     still advice = advice.from == st.recipe && now.seconds == st.forecast.seconds && now.extracted == st.forecast.extracted
   in
     st { forecast = now, advice = st.advice >>= \advice -> if still advice then Just advice else Nothing }
@@ -282,7 +323,7 @@ askAdvice st =
       , soak: not (isLocked st Soak)
       , seconds: not (isLocked st Seconds)
       }
-    found = advise (paramsOf st.world) (allShapes st) free st.recipe st.forecast
+    found = advise st.params (allShapes st) free st.recipe st.forecast
   in
     st
       { advice = found
@@ -296,28 +337,80 @@ takeAdvice st = case st.advice of
   Nothing -> st
 
 ------------------------------------------------------------
--- Time
+-- Time and the link
 ------------------------------------------------------------
 
--- | Advance the world one frame. When the machine changes state by
--- | itself (ready, asleep, faulted) the clock drops back to real time,
--- | so a fast-forwarded session does not race past the moment.
-frame :: State -> State
-frame st =
+-- | Let `ms` real milliseconds pass: the backend runs, the page hears
+-- | whatever has arrived, and requests that have waited too long for an
+-- | answer are given up on.
+tick :: Number -> State -> State
+tick ms st =
   let
-    world = stepMany (st.speed * 2) st.world
-    before = st.world.ctl.state
-    after = world.ctl.state
-    settled = after /= before && (after == Ready || after == Sleeping || after == Faulted)
+    clock = st.clock + ms
+    passed = Backend.advance ms st.backend
+    heard = foldl (flip hear) st { clock = clock, backend = passed.backend } passed.heard
+    waited = Machine.expire clock heard.machine
   in
-    st { world = world, speed = if settled then 1 else st.speed }
+    foldl lose heard { machine = waited.machine } waited.lost
 
--- | Put the plant at operating temperature. A sleeping machine is woken
--- | first, because a hot machine that is asleep still refuses a shot.
+-- | Take in one message from the machine. This is all a backend has to
+-- | deliver, whether it is the simulated one or a real link.
+hear :: Message -> State -> State
+hear message st =
+  let
+    result = Machine.hear st.params.config st.clock message st.machine
+    acted = foldl outcome st { machine = result.machine } result.outcomes
+  in
+    case message of
+      -- The machine is there again after a change of recipe went
+      -- unanswered: send the recipe as it now stands.
+      Report _ | acted.resend -> applyRecipe acted.recipe acted
+      _ -> acted
+
+outcome :: State -> Outcome -> State
+outcome st = case _ of
+  Accepted _ -> st
+  Refused pending reason -> undo pending st { notice = "Rejected: " <> reason }
+  -- The machine changing state by itself is watched in real time, so
+  -- a fast-forwarded session does not race past the moment.
+  CameToRest -> sim (SetSpeed 1) st
+
+-- | A request was never answered.
+lose :: State -> Pending -> State
+lose st pending =
+  let
+    told = st { notice = "No answer from the machine to " <> eventLabel pending.event <> "." }
+  in
+    case pending.event of
+      ProfileSelected _ -> (undo pending told) { resend = true }
+      _ -> told
+
+-- | Go back to the recipe from before a request that did not go
+-- | through. Later changes still waiting for an answer were made on top
+-- | of it, so they go back to the same recipe if they fail too.
+undo :: Pending -> State -> State
+undo pending st = case pending.undo of
+  Nothing -> st
+  Just recipe ->
+    refreshForecast
+      ( sim (LoadPuck (puckOf recipe)) st
+          { recipe = recipe
+          , machine = st.machine { pending = map (\p -> p { undo = p.undo $> recipe }) st.machine.pending }
+          }
+      )
+
+-- | Put the simulated plant at operating temperature. A sleeping
+-- | machine is asked to wake as well, because a hot machine that is
+-- | asleep still refuses a shot.
 skipWarmUp :: State -> State
-skipWarmUp st = case st.world.ctl.state of
+skipWarmUp st = case st.machine.status.state of
   Faulted -> st { notice = "Clear the fault under Service first." }
-  Sleeping -> case send (WakeRequested Full) st.world of
-    Right world -> st { world = warmUp world, notice = "" }
-    Left reason -> st { notice = "Rejected: " <> reason }
-  _ -> st { world = warmUp st.world, notice = "" }
+  Sleeping -> sim WarmUp (ask (WakeRequested Full) Nothing st { notice = "" })
+  _ -> sim WarmUp st { notice = "" }
+
+-- | A cold simulated machine with the present parameters, nothing in
+-- | flight on the link, and the present recipe sent to it afresh.
+reset :: State -> State
+reset st =
+  applyRecipe st.recipe
+    (sim (Reset st.params) st { machine = Machine.fresh (toProfile (allShapes st) st.recipe), notice = "" })

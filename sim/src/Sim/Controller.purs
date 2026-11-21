@@ -5,13 +5,13 @@
 -- | sensors and parameters into the core's flat messages, and turns the
 -- | status the core sends back into the record the page reads.
 -- |
--- | That makes `Ctl` the seam between the interface and the machine.
--- | Everything in it besides `core` is something the real machine will
--- | report over its link, and nothing the page shows comes from
--- | anywhere else.
+-- | A `Ctl` belongs to the simulated machine. The page does not hold
+-- | one. It hears the `status` of one in reports that arrive over the
+-- | link, late and not always.
 module Sim.Controller
   ( Ctl
-  , Event(..)
+  , module Sim.Link
+  , status
   , initialCtl
   , setParams
   , handle
@@ -29,6 +29,8 @@ import Data.Int (round, toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.Number (isNaN, nan)
 import Sim.Core as Core
+import Sim.Link (Event(..))
+import Sim.Link (ShotEnd, Status, shotEnded, shotNow) as Link
 import Sim.Types (Actuators, ClientKind(..), Config, Curve(..), Fault, FaultKind(..), GroupValve(..), MachineState(..), MixValve(..), PowerMode(..), Profile, PumpMode(..), Sensors, Shot, ShotState(..), Step, StepMode(..), Tuning, TwoWay(..))
 
 type Ctl =
@@ -37,7 +39,7 @@ type Ctl =
   , tune :: Tuning
   -- The controller's own memory. Only the core reads it.
   , core :: Core.State
-  -- What the controller reports about itself.
+  -- What the controller reports about itself, decoded from its status.
   , requestedMode :: PowerMode
   , state :: MachineState
   , act :: Actuators
@@ -47,6 +49,8 @@ type Ctl =
   , flowTargetMlPerS :: Maybe Number
   -- How far pacing has moved the pressure setpoint.
   , paceTrimBar :: Number
+  -- Flow into the group as the controller estimates it.
+  , flowEstimate :: Number
   , fillsSinceBlowdown :: Int
   , blowdownDue :: Boolean
   , waterWarning :: Boolean
@@ -54,25 +58,38 @@ type Ctl =
   -- faults, oldest first.
   , shot :: Maybe Shot
   , faults :: Array Fault
-  -- What this side keeps for the controller. It knows which profile it
-  -- last had accepted, and it keeps the log of ended shots: the
-  -- controller reports only how many have ended and the last of them.
+  -- What the simulated machine keeps beside the controller, for the
+  -- scenarios and the forecast: the profile it last accepted and a log
+  -- of ended shots. The controller reports only how many shots have
+  -- ended and the last of them.
   , selected :: Profile
   , history :: Array Shot
   , shotsEnded :: Int
+  , lastShot :: Maybe Link.ShotEnd
   }
 
-data Event
-  = WakeRequested PowerMode
-  | SleepRequested
-  | ProfileSelected Profile
-  | ShotRequested
-  | StepAdvanceRequested
-  | ShotStopRequested
-  | FaultsCleared ClientKind
-  | BlowdownConfirmed
-  | WaterWarningAcknowledged
-  | SensorFailed FaultKind
+-- | What the controller reports about itself, as it goes out over the
+-- | link. Every field came from the core's status message.
+status :: Ctl -> Link.Status
+status c =
+  { requestedMode: c.requestedMode
+  , state: c.state
+  , act: c.act
+  , groupTargetC: c.groupTargetC
+  , mixTargetC: c.mixTargetC
+  , pressureTargetBar: c.pressureTargetBar
+  , flowTargetMlPerS: c.flowTargetMlPerS
+  , paceTrimBar: c.paceTrimBar
+  , flowMlPerS: c.flowEstimate
+  , heaterWatts: heaterDrawWatts c.cfg c.act
+  , fillsSinceBlowdown: c.fillsSinceBlowdown
+  , blowdownDue: c.blowdownDue
+  , waterWarning: c.waterWarning
+  , shot: c.shot <#> \shot -> { stepIndex: shot.stepIndex, startedAt: shot.startedAt, stepStartedAt: shot.stepStartedAt }
+  , shotsEnded: c.shotsEnded
+  , lastShot: c.lastShot
+  , faults: c.faults
+  }
 
 ------------------------------------------------------------
 -- Messages to the core. The order of the fields is fixed by
@@ -240,7 +257,7 @@ eventWire = case _ of
 -- | The fixed part of a status is this long, and each fault after it
 -- | takes three numbers.
 statusHead :: Int
-statusHead = 33
+statusHead = 34
 
 -- | Read the core's reply into the record. The numbers are in the order
 -- | `write_status` puts them in.
@@ -252,35 +269,24 @@ absorb reply c =
     present i = if isNaN (at i) then Nothing else Just (at i)
     pick :: forall a. a -> Array a -> Int -> a
     pick fallback choices i = fromMaybe fallback (index choices (round (at i)))
-    stepAt i = fromMaybe (NEA.head c.selected.steps) (NEA.index c.selected.steps i)
     shot =
-      if on 21 then
-        Just
-          { profile: c.selected
-          , state: Running
-          , stepIndex: round (at 22)
-          , step: stepAt (round (at 22))
-          , startedAt: at 23
-          , stepStartedAt: at 24
-          , endedAt: Nothing
-          , finalGrams: Nothing
-          }
+      if on 21 then Just (Link.shotNow c.selected { stepIndex: round (at 22), startedAt: at 23, stepStartedAt: at 24 })
       else Nothing
     ended = round (at 25)
-    -- A shot has ended since the last status: add it to the log.
-    history =
-      if ended == c.shotsEnded then c.history
+    lastShot =
+      if ended == 0 then Nothing
       else
-        snoc c.history
-          { profile: c.selected
-          , state: pick Aborted [ Running, StoppedByWeight, StoppedByTime, StoppedByUser, Aborted ] 26
+        Just
+          { state: pick Aborted [ Running, StoppedByWeight, StoppedByTime, StoppedByUser, Aborted ] 26
           , stepIndex: round (at 30)
-          , step: stepAt (round (at 30))
           , startedAt: at 27
-          , stepStartedAt: at 27
-          , endedAt: Just (at 28)
+          , endedAt: at 28
           , finalGrams: present 29
           }
+    -- A shot has ended since the last status: add it to the log.
+    history = case lastShot of
+      Just end | ended /= c.shotsEnded -> snoc c.history (Link.shotEnded c.selected end)
+      _ -> c.history
     fault i =
       let
         base = statusHead + 3 * i
@@ -313,12 +319,14 @@ absorb reply c =
       , pressureTargetBar = present 15
       , flowTargetMlPerS = present 16
       , paceTrimBar = at 17
+      , flowEstimate = at 33
       , fillsSinceBlowdown = round (at 18)
       , blowdownDue = on 19
       , waterWarning = on 20
       , shot = shot
       , history = history
       , shotsEnded = ended
+      , lastShot = lastShot
       , faults = if faultCount <= 0 then [] else map fault (range 0 (faultCount - 1))
       }
 
@@ -353,6 +361,7 @@ initialCtl cfg tune profile =
     , pressureTargetBar: Nothing
     , flowTargetMlPerS: Nothing
     , paceTrimBar: 0.0
+    , flowEstimate: 0.0
     , fillsSinceBlowdown: 0
     , blowdownDue: false
     , waterWarning: false
@@ -361,6 +370,7 @@ initialCtl cfg tune profile =
     , selected: profile
     , history: []
     , shotsEnded: 0
+    , lastShot: Nothing
     }
 
 -- | Give the controller new limits, setpoints, calibration and gains.

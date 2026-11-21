@@ -17,11 +17,16 @@ import Effect (Effect)
 import Effect.Console (log)
 import Effect.Exception (throw)
 import Sim.Advice (advise)
+import Sim.Backend (Backend, SimCommand(..))
+import Sim.Backend as Backend
 import Sim.Controller (Event(..), shotInProgress)
 import Sim.Cup as Cup
 import Sim.Curve as Curve
 import Sim.Flavor as Flavor
 import Sim.Forecast (forecast)
+import Sim.Link (Event, eventLabel)
+import Sim.Machine (Machine, Outcome(..))
+import Sim.Machine as Machine
 import Sim.Params as Params
 import Sim.Plant (brewed)
 import Sim.Profiles as Profiles
@@ -82,7 +87,6 @@ idleSleepAndWake ready = do
   expect "still ready just before the idle period ends" (almost.ctl.state == Ready)
   let asleep = runUntil 120.0 (\w -> w.ctl.state == Sleeping) almost
   expect "asleep after the idle period" (asleep.ctl.state == Sleeping)
-  expect "the log says why" (map _.bad (last asleep.happenings) == Just true)
   expect "a shot is refused while asleep" (isLeft (send ShotRequested asleep))
   woken <- sendOrFail (WakeRequested Full) asleep
   let again = runUntil 1800.0 (\w -> w.ctl.state == Ready) woken
@@ -599,6 +603,134 @@ controllerCore ready = do
   expect "the log of shots is kept on this side, one entry per shot"
     (map _.state two.ctl.history == [ StoppedByWeight, StoppedByWeight ] && and (map (isJust <<< _.finalGrams) two.ctl.history))
 
+-- | A page with no interface: a machine as last heard and the backend
+-- | it is linked to, with a note of everything hearing did.
+type Page = { backend :: Backend, machine :: Machine, clock :: Number, notes :: Array String }
+
+-- | Let 50 real milliseconds pass, as one frame of the page does.
+frame :: Page -> Page
+frame p =
+  let
+    clock = p.clock + 50.0
+    passed = Backend.advance 50.0 p.backend
+    note = case _ of
+      Accepted pending -> "accepted " <> eventLabel pending.event
+      Refused pending reason -> "refused " <> eventLabel pending.event <> ": " <> reason
+      CameToRest -> "came to rest"
+    take acc message =
+      let
+        result = Machine.hear Params.defaults.config clock message acc.machine
+      in
+        acc { machine = result.machine, notes = acc.notes <> map note result.outcomes }
+    heard = foldl take p { clock = clock, backend = passed.backend } passed.heard
+    waited = Machine.expire clock heard.machine
+  in
+    heard { machine = waited.machine, notes = heard.notes <> map (\pending -> "lost " <> eventLabel pending.event) waited.lost }
+
+-- | Let real milliseconds pass until the page shows what is waited for,
+-- | or the limit runs out.
+pass :: Number -> (Page -> Boolean) -> Page -> Page
+pass limitMs done p
+  | done p || limitMs <= 0.0 = p
+  | otherwise = pass (limitMs - 50.0) done (frame p)
+
+wait :: Number -> Page -> Page
+wait ms = pass ms (const false)
+
+asks :: Event -> Page -> Page
+asks event p =
+  let
+    asked = Machine.ask p.clock event Nothing p.machine
+  in
+    p { machine = asked.machine, backend = Backend.request asked.request p.backend }
+
+tells :: SimCommand -> Page -> Page
+tells cmd p = p { backend = Backend.command cmd p.backend }
+
+noted :: String -> Page -> Boolean
+noted text p = length (filter (_ == text) p.notes) > 0
+
+-- | The link: the page asks and hears, late, and sometimes not at all.
+-- | Everything the page shows is checked here as the page gets it,
+-- | through `Sim.Machine`, with the simulated machine out of reach
+-- | behind `Sim.Backend`.
+link :: Effect Unit
+link = do
+  log "The link between the page and the machine"
+  let
+    opened =
+      tells (SetLink _ { delayMs = 200.0 })
+        { backend: Backend.create Params.defaults, machine: Machine.fresh Profiles.classic, clock: 0.0, notes: [] }
+  let early = wait 150.0 opened
+  expect "nothing is heard before the first report has crossed the link" (not early.machine.heard)
+  let listening = wait 350.0 early
+  let behind = (Backend.view listening.backend).now - listening.machine.at
+  log ("  with 200 ms each way, the page is " <> n2 behind <> " s behind the machine")
+  expect "the page hears the machine, and what it shows is behind it by the delay or more" (listening.machine.heard && behind >= 0.19 && behind < 0.4)
+
+  let woken = asks (WakeRequested Full) listening
+  let soon = wait 150.0 woken
+  expect "a request is not answered at once: the page still shows a sleeping machine" (soon.machine.status.state == Sleeping && length soon.machine.pending == 1)
+  let awake = pass 2000.0 (noted "accepted wake") soon
+  let seen = pass 1000.0 (\p -> p.machine.status.state == Heating) awake
+  expect "the answer arrives later and the request stops waiting" (noted "accepted wake" awake && length awake.machine.pending == 0)
+  expect "then the reports show the machine heating" (seen.machine.status.state == Heating)
+  expect "an answer takes at least the delay each way" (awake.clock - woken.clock >= 400.0)
+
+  let hasty = pass 2000.0 (\p -> length p.notes > length seen.notes) (asks ShotRequested seen)
+  expect "a refusal arrives as an answer, in the controller's own words" (noted "refused start shot: machine is not ready" hasty)
+
+  let ready = pass 60000.0 (\p -> p.machine.status.state == Ready) (tells WarmUp hasty)
+  expect "the page sees the machine come ready by itself" (ready.machine.status.state == Ready && noted "came to rest" ready)
+  expect "and its log, built from the reports, says so" (map _.text (last ready.machine.happenings) == Just "Ready.")
+
+  -- A whole shot, seen only through the link.
+  let pulling = wait 5000.0 (asks ShotRequested ready)
+  expect "a running shot shows with the profile the page last had accepted"
+    (map (\shot -> shot.profile.name) pulling.machine.shot == Just "Classic 9 bar" && noted "accepted start shot" pulling)
+  let pulled = pass 90000.0 (\p -> length p.machine.history == 1) pulling
+  let first = pulled.machine.trace
+  log ("  one shot through the link: " <> show (map _.state pulled.machine.history) <> ", " <> show (length first) <> " chart points, " <> n1 (fromMaybe 0.0 (last pulled.machine.history >>= _.finalGrams)) <> " g")
+  expect "the page logs the shot when the machine reports it ended"
+    (map _.state pulled.machine.history == [ StoppedByWeight ] && map (\grams -> abs (grams - 36.0) < 1.0) (last pulled.machine.history >>= _.finalGrams) == Just true)
+  expect "the chart was drawn from the reports, in order" (length first > 100 && and (zipWith (\a b -> a.t < b.t) first (drop 1 first)))
+  expect "the flow on the chart is the controller's estimate, and it is there" (fromMaybe 0.0 (maximum (map _.mlPerS first)) > 1.0)
+  expect "the slow traces are built from the reports too" (length pulled.machine.scope > 10)
+
+  -- Reports dropped on the way.
+  let again = pass 60000.0 (\p -> p.machine.status.state == Ready) (tells WarmUp (tells (SetLink _ { dropEvery = 3 }) pulled))
+  let lossy = pass 90000.0 (\p -> length p.machine.history == 2) (asks ShotRequested again)
+  let second = lossy.machine.trace
+  log ("  with every third report dropped: " <> show (length second) <> " chart points")
+  expect "with reports dropped the shot is still logged, once" (map _.state lossy.machine.history == [ StoppedByWeight, StoppedByWeight ])
+  expect "and its chart has gaps but is still a chart" (length second < length first && length second > length first / 2)
+
+  -- The link cut in the middle of a shot.
+  let third = pass 60000.0 (\p -> p.machine.status.state == Ready) (tells WarmUp (tells (SetLink _ { dropEvery = 0 }) lossy))
+  let running = wait 5000.0 (asks ShotRequested third)
+  let cut = wait 4000.0 (tells (SetLink _ { cut = true }) running)
+  expect "with the link cut the page goes on showing the last it heard"
+    (isJust cut.machine.shot && cut.machine.at == (wait 200.0 cut).machine.at && Machine.silence cut.clock cut.machine > 3000.0)
+  let unanswered = wait 4000.0 (asks ShotStopRequested cut)
+  expect "a request into a cut link is given up on" (noted "lost stop" unanswered && length unanswered.machine.pending == 0)
+  expect "and the machine never got it: the shot ran on by itself" ((Backend.view unanswered.backend).puck.extracted > 0.0)
+  let back = pass 90000.0 (\p -> length p.machine.history == 3) (tells (SetLink _ { cut = false }) (wait 30000.0 unanswered))
+  expect "when the link returns the page catches up, and logs the shot it missed the end of once"
+    (map _.state back.machine.history == [ StoppedByWeight, StoppedByWeight, StoppedByWeight ] && isNothing back.machine.shot && Machine.silence back.clock back.machine < 500.0)
+  let later = wait 3000.0 back
+  expect "catching up does not log it twice" (length later.machine.history == 3)
+
+  -- The machine restarts under the page.
+  let restarted = wait 2000.0 (tells (Reset Params.defaults) later)
+  expect "a machine whose clock has gone backwards is taken for a restart"
+    (restarted.machine.at < later.machine.at && map _.text (last restarted.machine.happenings) == Just "The machine restarted.")
+  expect "and its counters starting again add nothing to the log" (length restarted.machine.history == 3 && length restarted.machine.scope < 5)
+
+  -- The same run gives the same messages.
+  let rerun = pass 90000.0 (\p -> length p.machine.history == 1) (wait 5000.0 (asks ShotRequested ready))
+  expect "the same run of the link gives the same shot to the last digit"
+    (map _.finalGrams rerun.machine.history == map _.finalGrams pulled.machine.history && rerun.clock == pulled.clock && map _.bar rerun.machine.trace == map _.bar first)
+
 main :: Effect Unit
 main = do
   coffeeMap
@@ -622,5 +754,6 @@ main = do
   rampIsFollowed warm
   preInfusion warm
   controllerCore warm
+  link
   parameters cold
   log "All scenarios passed."

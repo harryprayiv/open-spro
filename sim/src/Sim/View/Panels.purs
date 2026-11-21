@@ -4,9 +4,9 @@ module Sim.View.Panels (machineView, brew, cup, faults, readings) where
 
 import Prelude
 
-import Data.Array (findIndex, index, last, mapWithIndex, null, reverse, take)
+import Data.Array (findIndex, index, last, length, mapWithIndex, null, reverse, take)
 import Data.Array.NonEmpty as NEA
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Number.Format (fixed, toStringWith)
 import Data.String (joinWith)
 import Halogen.HTML as HH
@@ -14,21 +14,20 @@ import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Sim.Cup as Cup
 import Sim.Flavor as Flavor
-import Sim.Controller (Event(..), heaterDrawWatts, shotInProgress)
+import Sim.Link (Event(..))
+import Sim.Machine (Machine, silence)
 import Sim.Invariants (checks)
-import Sim.Plant (brewed)
 import Sim.Model (Action(..), Field(..), State)
 import Sim.Problems (Problems, anyProblem)
 import Sim.Recipe (Recipe, Roast, roastLabel, roastNote, roasts, samples, targetGrams)
 import Sim.Types (ClientKind(..), FaultKind(..), PowerMode(..), Shot, StepMode(..))
-import Sim.Update (allShapes, applyRecipe, chooseRoast, chooseShape, fieldKey, findGrind, isLocked, limitsOf, setField, toggleLock, valueOf)
+import Sim.Update (allShapes, applyRecipe, chooseRoast, chooseShape, fieldKey, findGrind, isLocked, limitsOf, setField, simView, toggleLock, valueOf)
 import Sim.View.Bench (adviceLine, forecastLine)
 import Sim.View.Chart (chart)
 import Sim.View.Front (front)
 import Sim.View.Inside (inside)
 import Sim.View.Wheel (wheel)
 import Sim.View.Widgets (button, chosen, cls, clock, legend, n1, n2, numBox, primary, row, rowIf, section, segmented, slider, table, toggle)
-import Sim.World (World, sensors)
 
 onOff :: Boolean -> String
 onOff b = if b then "on" else "off"
@@ -42,14 +41,15 @@ onOff b = if b then "on" else "off"
 machineView :: forall w. State -> Problems -> Array (HH.HTML w Action)
 machineView st wrong =
   let
-    w = st.world
-    c = w.ctl
-    s = sensors w
+    m = st.machine
+    c = m.status
+    s = m.sensors
+    sim = simView st
   in
     [ nowPlaying st
     , HH.div [ cls "views" ]
         [ front
-            { now: w.now
+            { now: m.at
             , state: c.state
             , brewBar: s.brewBar
             , steamBar: s.steamBar
@@ -61,31 +61,33 @@ machineView st wrong =
             , brewElementOn: c.act.brewElementOn
             , steamElementOn: c.act.steamElementOn
             , groupHeaterOn: c.act.groupHeaterOn
-            , pouring: shotInProgress c && s.cupGrams > 0.05 && s.brewBar > 0.3
-            , steaming: w.dist.steamValveOpen && s.steamBar > 0.2
-            , paddle: case c.shot of
+            , pouring: isJust c.shot && s.cupGrams > 0.05 && s.brewBar > 0.3
+            , steaming: sim.dist.steamValveOpen && s.steamBar > 0.2
+            , paddle: case m.shot of
                 Nothing -> 0
                 Just shot ->
                   if shot.step.mode == LinePrebrew || (shot.stepIndex == 0 && NEA.length shot.profile.steps > 1) then 1
                   else 2
             , problem: anyProblem wrong
-            , flowMlPerS: w.plant.flowMlPerS
-            , streamColour: Cup.streamColour st.recipe.roast w.plant.extracted w.plant.puckEvenness w.plant.flowMlPerS
+            , flowMlPerS: c.flowMlPerS
+            -- The colour of the stream is read off the simulated puck.
+            -- A real machine cannot see it.
+            , streamColour: Cup.streamColour st.recipe.roast sim.puck.extracted sim.puck.evenness c.flowMlPerS
             }
         , inside
-            { now: w.now
+            { now: m.at
             , act: c.act
-            , flowMlPerS: w.plant.flowMlPerS
+            , flowMlPerS: c.flowMlPerS
             , reservoirC: s.brewBoilerC
             , mixC: s.mixC
             , steamBar: s.steamBar
-            , steamWaterMl: w.plant.steamWaterMl
-            , steamValveOpen: w.dist.steamValveOpen
+            , steamWaterMl: sim.steamWaterMl
+            , steamValveOpen: sim.dist.steamValveOpen
             , problems: wrong
             }
         ]
-    , HH.p [ cls "shot-line" ] [ HH.text (shotLine w) ]
-    , chart w.trace
+    , HH.p [ cls "shot-line" ] [ HH.text (shotLine m) ]
+    , chart m.trace
     , HH.p [ cls "legend" ]
         [ legend "bar" "pressure, bar (0 to 12)"
         , legend "flow" "flow, ml/s (0 to 12)"
@@ -102,14 +104,14 @@ machineView st wrong =
 brew :: forall w. State -> Array (HH.HTML w Action)
 brew st =
   let
-    w = st.world
+    sim = simView st
     r = st.recipe
   in
     [ HH.div [ cls "choices" ]
         [ primary "Start shot" (Send ShotRequested)
         , button "Next step" (Send StepAdvanceRequested)
         , button "Stop" (Send ShotStopRequested)
-        , toggle "Steam" w.dist.steamValveOpen (Disturb \d -> d { steamValveOpen = not d.steamValveOpen })
+        , toggle "Steam" sim.dist.steamValveOpen (Disturb \d -> d { steamValveOpen = not d.steamValveOpen })
         ]
     , section "Beans" (map presetButton samples <> map savedPreset st.saved)
     , HH.div [ cls "bean" ]
@@ -150,7 +152,7 @@ brew st =
         [ button "Wake, brew" (Send (WakeRequested BrewReady))
         , button "Wake, brew and steam" (Send (WakeRequested Full))
         , button "Sleep" (Send SleepRequested)
-        , segmented (map (\speed -> chosen (st.speed == speed) (show speed <> "x") (SetSpeed speed)) [ 1, 10, 60 ])
+        , segmented (map (\speed -> chosen (sim.speed == speed) (show speed <> "x") (SetSpeed speed)) [ 1, 10, 60 ])
         , button "Skip warm-up" SkipWarmUp
         , button "Reset" Reset
         ]
@@ -164,8 +166,9 @@ nowPlaying st =
     said text = if text == "" then [] else [ text ]
     details = said r.roaster <> [ roastLabel r.roast <> " roast" ] <> (if r.roastedOn == "" then [] else [ "roasted " <> r.roastedOn ])
     cupNote =
-      if shotInProgress st.world.ctl || null st.world.ctl.history then ""
-      else Cup.cupNote st.world.plant.extracted (brewed st.world.plant)
+      if isJust st.machine.shot || null st.machine.history then ""
+      else Cup.cupNote sim.puck.extracted sim.brewed
+    sim = simView st
   in
     HH.div [ cls "now-playing" ]
       [ HH.span [ cls "now-label" ] [ HH.text "Now brewing" ]
@@ -298,17 +301,37 @@ fieldRow st which title unit places =
 faults :: forall w. State -> Problems -> Array (HH.HTML w Action)
 faults st wrong =
   let
-    w = st.world
-    c = w.ctl
-    s = sensors w
+    m = st.machine
+    c = m.status
+    s = m.sensors
+    sim = simView st
+    link = sim.link
   in
     [ if anyProblem wrong then HH.ul [ cls "problems" ] (map (\text -> HH.li_ [ HH.text text ]) wrong.lines)
       else HH.p [ cls "note" ] [ HH.text "Nothing is wrong." ]
     , section "Make something go wrong"
-        [ toggle "Water supply cut off" (not w.dist.inletOpen) (Disturb \d -> d { inletOpen = not d.inletOpen })
-        , toggle "Cold branch blocked" w.dist.coldBranchBlocked (Disturb \d -> d { coldBranchBlocked = not d.coldBranchBlocked })
-        , toggle "Hard water at inlet" w.dist.hardWater (Disturb \d -> d { hardWater = not d.hardWater })
+        [ toggle "Water supply cut off" (not sim.dist.inletOpen) (Disturb \d -> d { inletOpen = not d.inletOpen })
+        , toggle "Cold branch blocked" sim.dist.coldBranchBlocked (Disturb \d -> d { coldBranchBlocked = not d.coldBranchBlocked })
+        , toggle "Hard water at inlet" sim.dist.hardWater (Disturb \d -> d { hardWater = not d.hardWater })
         , button "Break a sensor" (Send (SensorFailed SensorOpen))
+        ]
+    -- The link between the page and the machine. Each way takes the
+    -- delay, so an answer takes twice as long.
+    , section "The link to the machine"
+        [ toggle "Unplugged" link.cut (SetLink \l -> l { cut = not l.cut })
+        , segmented
+            ( map
+                (\ms -> chosen (link.delayMs == ms) (toStringWith (fixed 0) ms <> " ms") (SetLink _ { delayMs = ms }))
+                [ 0.0, 60.0, 250.0, 1000.0 ]
+            )
+        , toggle "Drop every third report" (link.dropEvery == 3) (SetLink \l -> l { dropEvery = if l.dropEvery == 3 then 0 else 3 })
+        ]
+    , table
+        [ row "Last heard" (if m.heard then n1 (silence st.clock m / 1000.0) <> " s ago" else "never")
+        , row "The machine's clock, as last heard" (clock m.at)
+        , row "The machine's clock, in truth" (clock sim.now <> " (simulation only)")
+        , row "Requests awaiting an answer" (show (length m.pending))
+        , row "Messages in flight" (show sim.inFlight)
         ]
     , section "Service"
         [ button "Clear faults" (Send (FaultsCleared Service))
@@ -316,29 +339,30 @@ faults st wrong =
         , button "Acknowledge water warning" (Send WaterWarningAcknowledged)
         ]
     , section "What is happening" []
-    , if null w.happenings then HH.p [ cls "note" ] [ HH.text "Nothing yet. Wake the machine to begin." ]
+    , if null m.happenings then HH.p [ cls "note" ] [ HH.text "Nothing yet. Wake the machine to begin." ]
       else HH.ul [ cls "log" ]
         ( map
             (\h -> HH.li [ cls (if h.bad then "bad" else "") ] [ HH.text (clock h.at <> ": " <> h.text) ])
-            (reverse w.happenings)
+            (reverse m.happenings)
         )
     , table
         [ row "Fills since blowdown" (show c.fillsSinceBlowdown)
-        , row "Idle sleep after" (clock c.cfg.idleSleepAfter <> " without use")
+        , row "Idle sleep after" (clock st.params.config.idleSleepAfter <> " without use")
         , rowIf (not (null c.faults)) "Faults"
             ( if null c.faults then "none"
               else joinWith ", " (map (\f -> show f.kind <> maybe " (active)" (const " (cleared)") f.clearedAt) c.faults)
             )
         ]
     , section "Shots" []
-    , if null c.history then HH.p [ cls "note" ] [ HH.text "No shot yet." ]
-      else HH.ul [ cls "log" ] (map shotItem (take 5 (reverse c.history)))
+    , if null m.history then HH.p [ cls "note" ] [ HH.text "No shot yet." ]
+      else HH.ul [ cls "log" ] (map shotItem (take 5 (reverse m.history)))
     , section "Spec invariants" []
-    , table (map (\k -> rowIf (not k.holds) k.name (if k.holds then "holds" else "BROKEN")) (checks s c))
-    , HH.p [ cls (if null w.violations then "note" else "bad") ]
+    , table (map (\k -> rowIf (not k.holds) k.name (if k.holds then "holds" else "BROKEN")) (checks st.params.config s c))
+    , HH.p [ cls "note" ] [ HH.text "Checked here on each report the page hears. The simulator also checks them on every controller cycle:" ]
+    , HH.p [ cls (if null sim.violations then "note" else "bad") ]
         [ HH.text
-            ( if null w.violations then "No invariant has been broken in this session."
-              else "Broken at some point: " <> joinWith ", " w.violations
+            ( if null sim.violations then "No invariant has been broken in this session."
+              else "Broken at some point: " <> joinWith ", " sim.violations
             )
         ]
     ]
@@ -350,19 +374,21 @@ faults st wrong =
 readings :: forall w. State -> Array (HH.HTML w Action)
 readings st =
   let
-    w = st.world
-    c = w.ctl
-    s = sensors w
+    m = st.machine
+    c = m.status
+    s = m.sensors
+    sim = simView st
+    cfg = st.params.config
   in
     [ section "Sensors" []
     , table
-        [ row "Brew reservoir" (n1 s.brewBoilerC <> " C, target " <> n1 c.cfg.reservoirTargetC)
+        [ row "Brew reservoir" (n1 s.brewBoilerC <> " C, target " <> n1 cfg.reservoirTargetC)
         , row "Group block" (n1 s.groupC <> " C, target " <> n1 c.groupTargetC)
         , row "Mix outlet" (n1 s.mixC <> " C" <> maybe "" (\t -> ", target " <> n1 t) c.mixTargetC)
         , row "Water above screen" (n1 s.groupWaterC <> " C")
         , row "Inlet" (n1 s.inletC <> " C, " <> n1 s.inletBar <> " bar, " <> n1 s.inletConductivityUs <> " uS/cm")
         , row "Brew pressure" (n1 s.brewBar <> " bar" <> maybe "" (\t -> ", target " <> n1 t) c.pressureTargetBar)
-        , row "Flow into group" (n2 w.plant.flowMlPerS <> " ml/s" <> maybe "" (\t -> ", target " <> n2 t) c.flowTargetMlPerS)
+        , row "Flow into group, estimated" (n2 c.flowMlPerS <> " ml/s" <> maybe "" (\t -> ", target " <> n2 t) c.flowTargetMlPerS)
         , rowIf (not s.steamLevelOk) "Steam" (n2 s.steamBar <> " bar, level " <> (if s.steamLevelOk then "ok" else "low"))
         , row "Cup" (n1 s.cupGrams <> " g")
         ]
@@ -370,10 +396,11 @@ readings st =
     -- directly, and the real machine will not have them.
     , section "Puck (simulation only)" []
     , table
-        [ row "Wetted" (n1 w.plant.puckWetMl <> " ml held, settled " <> n2 w.plant.puckSettled)
-        , row "Bed temperature" (n1 w.plant.puckC <> " C")
-        , row "Evenness" (n2 w.plant.puckEvenness)
-        , row "Extracted" (n2 w.plant.extracted <> " in the cup, " <> n2 w.plant.dissolved <> " still held in the puck")
+        [ row "Wetted" (n1 sim.puck.wetMl <> " ml held, settled " <> n2 sim.puck.settled)
+        , row "Bed temperature" (n1 sim.puck.bedC <> " C")
+        , row "Evenness" (n2 sim.puck.evenness)
+        , row "Extracted" (n2 sim.puck.extracted <> " in the cup, " <> n2 sim.puck.dissolved <> " still held in the puck")
+        , row "True flow into group" (n2 sim.flowMlPerS <> " ml/s")
         ]
     , section "Actuators" []
     , table
@@ -381,7 +408,7 @@ readings st =
         , row "Brew element" (onOff c.act.brewElementOn)
         , row "Steam element" (onOff c.act.steamElementOn)
         , row "Group heaters" (onOff c.act.groupHeaterOn)
-        , row "Heater draw" (show (heaterDrawWatts c.cfg c.act) <> " W of " <> show c.cfg.circuitBudgetWatts)
+        , row "Heater draw" (show c.heaterWatts <> " W of " <> show cfg.circuitBudgetWatts)
         , row "Pump" (show c.act.pump <> ", speed " <> n2 c.act.pumpSpeed)
         , row "Bypass valve SV_BYP" (show c.act.bypassValve)
         , row "Fill valve SV_FILL" (show c.act.fillValve)
@@ -394,14 +421,14 @@ readings st =
 -- Shots in words
 ------------------------------------------------------------
 
-shotLine :: World -> String
-shotLine w = case w.ctl.shot of
+shotLine :: Machine -> String
+shotLine m = case m.shot of
   Just shot ->
     "Running " <> shot.profile.name
       <> ", step " <> show (shot.stepIndex + 1) <> " of " <> show (NEA.length shot.profile.steps)
       <> " (" <> shot.step.name <> ", " <> show shot.step.mode <> ", " <> n1 shot.step.targetC <> " C)"
-      <> ", " <> n1 (w.now - shot.startedAt) <> " s"
-  Nothing -> case last w.ctl.history of
+      <> ", " <> n1 (m.at - shot.startedAt) <> " s"
+  Nothing -> case last m.history of
     Just shot -> "Last shot: " <> describeShot shot
     Nothing -> "No shot yet."
 

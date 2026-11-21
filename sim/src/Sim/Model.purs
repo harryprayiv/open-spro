@@ -10,14 +10,15 @@ import Prelude
 
 import Data.Maybe (Maybe)
 import Sim.Advice (Advice)
-import Sim.Controller (Event)
+import Sim.Backend (Backend, LinkSettings)
 import Sim.Forecast (Forecast)
 import Sim.Layout (View)
-import Sim.Params (Group)
+import Sim.Link (Event)
+import Sim.Machine (Machine)
+import Sim.Params (Group, Params)
 import Sim.Plant (Disturbance)
 import Sim.Recipe (Recipe)
 import Sim.Types (Profile)
-import Sim.World (World)
 import Web.UIEvent.MouseEvent (MouseEvent)
 
 -- | The recipe settings that have a slider.
@@ -30,9 +31,20 @@ data Theme = Day | Night
 derive instance eqTheme :: Eq Theme
 
 type State =
-  { world :: World
-  -- Simulated seconds per real second.
-  , speed :: Int
+  { -- The machine as last heard from. Everything the page shows about
+    -- the machine comes from here.
+    machine :: Machine
+  -- The simulated machine at the far end of the link. The page sends
+  -- it requests and simulator commands, lets time pass for it, and
+  -- reads the simulator's own view of it. It reads nothing else.
+  , backend :: Backend
+  -- The page's clock: real milliseconds since it was opened.
+  , clock :: Number
+  -- The parameters the page last set, which the forecast runs on.
+  , params :: Params
+  -- A change of recipe went unanswered, so the machine may not have
+  -- it. It is sent again when the machine is next heard from.
+  , resend :: Boolean
   , notice :: String
   , recipe :: Recipe
   , saved :: Array Recipe
@@ -72,6 +84,7 @@ data Action
   | Send Event
   | SetSpeed Int
   | Disturb (Disturbance -> Disturbance)
+  | SetLink (LinkSettings -> LinkSettings)
   | SkipWarmUp
   | Reset
   -- A number box: its key, the text typed, and what to do with a number.

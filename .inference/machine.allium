@@ -1025,3 +1025,21 @@ surface PaceLoop {
 --     the fields of this spec's surfaces as flat numbers. The framing
 --     for the link from the Pi (CBOR over UART in docs/design.md) is
 --     not written.
+-- 15. The page no longer holds a controller. It sends requests over a
+--     link and hears reports and answers some time later, and the
+--     simulated machine sits behind the same link with a delay, dropped
+--     reports and a cut that can be switched on. Three things about
+--     that link are behaviour and are not in this spec:
+--     a. A request is answered: accepted, or refused with the unmet
+--        requires clause. No surface here has an answer.
+--     b. The page gives up on a request not answered within three
+--        seconds and puts back the recipe a refused or unanswered
+--        change of profile replaced. The machine may still act on a
+--        request the page has given up on.
+--     c. The machine reports its status twenty times a second. A
+--        report carries how many shots have ended and the last of
+--        them, so a page that misses reports still logs each shot
+--        once, and loses a shot only if two end between reports.
+--     The status also carries the controller's own estimate of flow
+--     into the group, which is the only flow a machine with no flow
+--     meter can report.

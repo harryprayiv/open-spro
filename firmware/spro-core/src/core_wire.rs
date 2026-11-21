@@ -38,7 +38,7 @@ pub const TUNING_LEN: usize = 16;
 pub const PROFILE_HEAD_LEN: usize = 5;
 pub const STEP_LEN: usize = 9;
 pub const PROFILE_MAX_LEN: usize = PROFILE_HEAD_LEN + MAX_STEPS * STEP_LEN;
-pub const STATUS_HEAD_LEN: usize = 33;
+pub const STATUS_HEAD_LEN: usize = 34;
 pub const FAULT_LEN: usize = 3;
 pub const STATUS_LEN: usize = STATUS_HEAD_LEN + MAX_FAULTS * FAULT_LEN;
 
@@ -331,6 +331,7 @@ pub fn write_status(c: &Controller, out: &mut [f64]) {
         c.last_shot.map_or(0.0, |shot| shot.step_index as f64),
         c.heater_draw_watts() as f64,
         c.fault_count as f64,
+        c.flow_ml_per_s as f64,
     ];
     out[..STATUS_HEAD_LEN].copy_from_slice(&head);
     for (i, place) in out[STATUS_HEAD_LEN..STATUS_LEN].chunks_exact_mut(FAULT_LEN).enumerate() {

@@ -1,10 +1,10 @@
--- | Plant and controller wired together, with a recorded trace of the
--- | current shot. The page and the scenario tests both drive this.
+-- | The simulated machine: plant and controller wired together, with a
+-- | recorded trace of the current shot. The simulated backend, the
+-- | forecast and the scenarios drive this. The page does not: it hears
+-- | about a world only through `Sim.Backend`.
 module Sim.World
   ( World
-  , Sample
-  , ScopeSample
-  , Happening
+  , module Sim.Link
   , dt
   , worldWith
   , initialWorld
@@ -19,49 +19,19 @@ module Sim.World
 
 import Prelude
 
-import Data.Array (last, length, nub, snoc, takeEnd)
+import Data.Array (length, nub, snoc)
 import Data.Array.NonEmpty as NEA
 import Data.Either (Either)
-import Data.Int (round, toNumber)
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
-import Sim.Controller (Ctl, Event(..), handle, heaterDrawWatts, initialCtl, shotInProgress, tick)
+import Data.Maybe (fromMaybe, maybe)
+import Sim.Controller (Ctl, Event(..), handle, initialCtl, shotInProgress, tick)
 import Sim.Controller as Controller
 import Sim.Invariants (violated)
+import Sim.Link (Sample)
 import Sim.Params (Params)
 import Sim.Params as Params
 import Sim.Plant (Disturbance, Plant, Puck, freshPuck, initialPlant, noDisturbance, readSensors, stepPlant, warmPlant)
 import Sim.Profiles as Profiles
-import Sim.Types (MachineState(..), Sensors, ShotState(..), TwoWay(..))
-
--- | One point of the shot chart.
-type Sample =
-  { t :: Number
-  , bar :: Number
-  , mlPerS :: Number
-  , mixC :: Number
-  , groupWaterC :: Number
-  , targetC :: Number
-  , grams :: Number
-  -- The step the shot was in, and the pressure the controller was
-  -- asking for, if it was asking for one.
-  , step :: Int
-  , askedBar :: Maybe Number
-  -- How far pacing had moved the pressure setpoint.
-  , paceBar :: Number
-  }
-
--- | One point of the long, slow traces: the thermal state every couple
--- | of simulated seconds.
-type ScopeSample =
-  { t :: Number
-  , reservoirC :: Number
-  , groupC :: Number
-  , steamBar :: Number
-  , heaterW :: Number
-  }
-
--- | A line of the machine's log. `bad` marks the ones to show in red.
-type Happening = { at :: Number, text :: String, bad :: Boolean }
+import Sim.Types (Sensors)
 
 type World =
   { now :: Number
@@ -75,22 +45,11 @@ type World =
   , lastSampleAt :: Number
   -- Every spec invariant seen broken since the world was created.
   , violations :: Array String
-  -- What the machine did by itself, newest last.
-  , happenings :: Array Happening
-  , scope :: Array ScopeSample
-  , lastScopeAt :: Number
   }
 
 -- | Simulated seconds per step, for both the plant and the controller.
 dt :: Number
 dt = 0.025
-
--- | Seconds between scope samples, and how many are kept.
-scopeEvery :: Number
-scopeEvery = 2.0
-
-scopeKept :: Int
-scopeKept = 900
 
 -- | A cold, sleeping machine built from the given parameters.
 worldWith :: Params -> World
@@ -104,9 +63,6 @@ worldWith params =
   , shotStartedAt: 0.0
   , lastSampleAt: 0.0
   , violations: []
-  , happenings: []
-  , scope: []
-  , lastScopeAt: 0.0
   }
 
 initialWorld :: World
@@ -134,7 +90,7 @@ stepWorld w =
     s = sensors w
     ctl = tick dt now s w.ctl
     plant = stepPlant dt w.dist ctl.act w.plant
-    broken = violated s ctl
+    broken = violated ctl.cfg s (Controller.status ctl)
     sampleDue = shotInProgress ctl && now - w.lastSampleAt >= 0.1 && length w.trace < 2000
     sample =
       { t: now - w.shotStartedAt
@@ -148,14 +104,6 @@ stepWorld w =
       , askedBar: ctl.pressureTargetBar
       , paceBar: ctl.paceTrimBar
       }
-    scopeDue = now - w.lastScopeAt >= scopeEvery
-    scopeSample =
-      { t: now
-      , reservoirC: plant.reservoirC
-      , groupC: plant.groupBlockC
-      , steamBar: s.steamBar
-      , heaterW: toNumber (heaterDrawWatts ctl.cfg ctl.act)
-      }
   in
     w
       { now = now
@@ -164,38 +112,7 @@ stepWorld w =
       , trace = if sampleDue then snoc w.trace sample else w.trace
       , lastSampleAt = if sampleDue then now else w.lastSampleAt
       , violations = if broken == [] then w.violations else nub (w.violations <> broken)
-      , happenings = takeEnd 8 (w.happenings <> changes now w.ctl ctl)
-      , scope = if scopeDue then takeEnd scopeKept (snoc w.scope scopeSample) else w.scope
-      , lastScopeAt = if scopeDue then now else w.lastScopeAt
       }
-
--- | Describe what one controller cycle changed without being asked.
-changes :: Number -> Ctl -> Ctl -> Array Happening
-changes now before after =
-  let
-    say bad text = [ { at: now, text, bad } ]
-    stateChange
-      | before.state == after.state = []
-      | after.state == Faulted =
-          say true
-            ( "Fault: " <> maybe "unknown" (show <<< _.kind) (last after.faults)
-                <> ". Heaters are off and the machine needs clearing under Service."
-            )
-      | after.state == Ready = say false "Ready."
-      | after.state == Sleeping =
-          say true ("Went to sleep by itself after " <> show (round (after.cfg.idleSleepAfter / 60.0)) <> " idle minutes. Wake it to carry on.")
-      | before.state == Ready && after.state == Heating =
-          say false "Dropped out of ready while a temperature recovers."
-      | otherwise = []
-    fillChange
-      | before.act.fillValve == Closed && after.act.fillValve == Open = say false "Steam boiler filling."
-      | otherwise = []
-    shotChange = case last after.history of
-      Just shot | length after.history > length before.history ->
-        say (shot.state == Aborted) ("Shot ended: " <> show shot.state <> ".")
-      _ -> []
-  in
-    stateChange <> fillChange <> shotChange
 
 stepMany :: Int -> World -> World
 stepMany n w

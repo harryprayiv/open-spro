@@ -4,15 +4,18 @@ module Sim.Problems
   ( Problems
   , problems
   , anyProblem
+  , silentAfter
   ) where
 
 import Prelude
 
 import Data.Array (filter, null)
+import Data.Int (round)
 import Data.Maybe (isNothing)
 import Data.String (joinWith)
+import Sim.Backend (SimView)
+import Sim.Machine (Machine)
 import Sim.Types (FaultKind, MachineState(..), PowerMode(..), TwoWay(..))
-import Sim.World (World, sensors)
 
 type Problems =
   { lines :: Array String
@@ -21,31 +24,46 @@ type Problems =
   , coldBlocked :: Boolean
   , hardWater :: Boolean
   , levelLow :: Boolean
+  -- Nothing has been heard from the machine for a while, so what the
+  -- page shows is old.
+  , silent :: Boolean
   }
 
-problems :: World -> Problems
-problems w =
+-- | Real milliseconds without a report before the page says so. The
+-- | machine reports twenty times a second.
+silentAfter :: Number
+silentAfter = 1000.0
+
+-- | `silentMs` is how long it is since the machine was last heard
+-- | from. The machine's own troubles come from its last report. The
+-- | simulator's view adds what a real machine could not report: which
+-- | disturbances are switched on and which invariants have been broken.
+problems :: Number -> Machine -> SimView -> Problems
+problems silentMs m sim =
   let
-    c = w.ctl
-    s = sensors w
+    c = m.status
+    s = m.sensors
     faults = map _.kind (filter (isNothing <<< _.clearedAt) c.faults)
-    supplyCut = not w.dist.inletOpen
+    supplyCut = not sim.dist.inletOpen
     levelLow = c.requestedMode == Full && not s.steamLevelOk && c.act.fillValve == Closed && c.state /= Sleeping
+    silent = silentMs > silentAfter
     whenTrue condition text = if condition then [ text ] else []
   in
     { faults
     , supplyCut
-    , coldBlocked: w.dist.coldBranchBlocked
-    , hardWater: w.dist.hardWater
+    , coldBlocked: sim.dist.coldBranchBlocked
+    , hardWater: sim.dist.hardWater
     , levelLow
+    , silent
     , lines:
-        map (\kind -> "Fault: " <> show kind <> ". Heaters are off. Clear it under Service.") faults
+        whenTrue silent ("No word from the machine for " <> show (round (silentMs / 1000.0)) <> " s. What is shown is the last it said.")
+          <> map (\kind -> "Fault: " <> show kind <> ". Heaters are off. Clear it under Service.") faults
           <> whenTrue supplyCut "Water supply is cut off."
-          <> whenTrue w.dist.coldBranchBlocked "Cold branch is blocked."
+          <> whenTrue sim.dist.coldBranchBlocked "Cold branch is blocked."
           <> whenTrue c.waterWarning "Inlet water is out of range for scale prevention."
           <> whenTrue c.blowdownDue "Steam boiler blowdown is due."
           <> whenTrue levelLow "Steam boiler level is low and it is not filling."
-          <> whenTrue (not (null w.violations)) ("Spec invariant broken: " <> joinWith ", " w.violations)
+          <> whenTrue (not (null sim.violations)) ("Spec invariant broken: " <> joinWith ", " sim.violations)
     }
 
 anyProblem :: Problems -> Boolean

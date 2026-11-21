@@ -1,5 +1,7 @@
 -- | The page: a machine pane, a controls pane and a bench pane that can
--- | be put away, over the simulated world. The view, the theme, saved
+-- | be put away. The page holds no machine. It sends requests to one,
+-- | hears its reports and answers some time later, and shows what it
+-- | last heard. Here the machine at the far end is a simulated one. The view, the theme, saved
 -- | recipes, the user's profile shapes and every parameter are
 -- | remembered. When something is wrong the top bar says so in red and
 -- | the drawings mark it in red.
@@ -10,7 +12,6 @@ import Prelude
 import Control.Monad.Rec.Class (forever)
 import Data.Array (filter, length, snoc)
 import Data.Array.NonEmpty as NEA
-import Data.Either (Either(..))
 import Data.Int (toNumber)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Number as Number
@@ -23,7 +24,8 @@ import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Halogen.Subscription as HS
-import Sim.Controller (Event(..))
+import Sim.Backend as Backend
+import Sim.Machine as Machine
 import Sim.Layout (BenchTab(..), Tab(..), benchTabs, benchTitle, defaultView, tabTitle, tabs)
 import Sim.Layout as Layout
 import Sim.Forecast (forecast)
@@ -36,13 +38,12 @@ import Sim.Recipe as Recipe
 import Sim.Profiles as Profiles
 import Sim.Shapes as Shapes
 import Sim.Store as Store
-import Sim.Update (applyRecipe, frame, refreshForecast, skipWarmUp, defaultLocks)
+import Sim.Update (applyRecipe, defaultLocks, refreshForecast, request, reset, sim, simView, skipWarmUp, tick)
 import Sim.View.Bench (designer, scope, settings)
 import Sim.View.Panels (brew, cup, faults, machineView, readings)
 import Sim.View.Widgets (chosen, cls, clock, segmented)
 import Web.Event.Event (preventDefault)
 import Web.UIEvent.MouseEvent (clientX, toEvent)
-import Sim.World (initialWorld, paramsOf, send, worldWith)
 
 recipesKey :: String
 recipesKey = "espresso-sim.recipes"
@@ -83,8 +84,11 @@ component :: forall query input output m. MonadAff m => H.Component query input 
 component =
   H.mkComponent
     { initialState: \_ ->
-        { world: initialWorld
-        , speed: 1
+        { machine: Machine.fresh (toProfile (NEA.toArray Profiles.all) defaultRecipe)
+        , backend: Backend.create Params.defaults
+        , clock: 0.0
+        , params: Params.defaults
+        , resend: false
         , notice: ""
         , recipe: defaultRecipe
         , saved: []
@@ -109,8 +113,9 @@ component =
         }
     }
 
--- | Real milliseconds between frames. Two world steps of 25 simulated
--- | milliseconds per frame is real time.
+-- | Real milliseconds between frames. Each frame the simulated machine
+-- | is given that much time to run, and the page hears what has reached
+-- | it by then.
 frameMs :: Number
 frameMs = 50.0
 
@@ -128,7 +133,7 @@ changeAndStore change = do
     Store.save viewKey (Layout.encode st.view)
     Store.save shapesKey (Shapes.encode st.shapes)
     Store.save recipesKey (Recipe.encode st.saved)
-    Store.save paramsKey (Params.encode (paramsOf st.world))
+    Store.save paramsKey (Params.encode st.params)
     Store.save locksKey (joinWith "," st.locks)
 
 handleAction :: forall output m. MonadAff m => Action -> H.HalogenM State Action () output m Unit
@@ -141,6 +146,7 @@ handleAction = case _ of
     params <- H.liftEffect (Store.load paramsKey)
     locks <- H.liftEffect (Store.load locksKey)
     sizes <- H.liftEffect (Store.load sizesKey)
+    let stored = maybe Params.defaults Params.decode params
     H.modify_ \st -> refreshForecast $ applyRecipe st.recipe st
       { saved = maybe [] Recipe.decode recipes
       , view = maybe defaultView Layout.decode view
@@ -148,7 +154,8 @@ handleAction = case _ of
       , shapes = maybe [] Shapes.decode shapes
       , sizes = fromMaybe defaultSizes (sizes >>= readSizes)
       , locks = maybe defaultLocks (filter (_ /= "") <<< split (Pattern ",")) locks
-      , world = worldWith (maybe Params.defaults Params.decode params)
+      , params = stored
+      , backend = Backend.create stored
       }
     { emitter, listener } <- H.liftEffect HS.create
     _ <- H.liftAff $ Aff.forkAff $ forever do
@@ -156,24 +163,20 @@ handleAction = case _ of
       H.liftEffect (HS.notify listener Tick)
     void (H.subscribe emitter)
   Tick ->
-    H.modify_ frame
+    H.modify_ (tick frameMs)
+  -- A request to the machine. Its answer arrives with a later tick.
   Send event ->
-    H.modify_ \st -> case send event st.world of
-      Left reason -> st { notice = "Rejected: " <> reason }
-      Right world -> st
-        { world = world
-        , notice = ""
-        , speed = if startsShot event then 1 else st.speed
-        }
+    H.modify_ (request event)
   SetSpeed speed ->
-    H.modify_ _ { speed = speed }
+    H.modify_ (sim (Backend.SetSpeed speed))
   Disturb change ->
-    H.modify_ \st -> st { world = st.world { dist = change st.world.dist } }
+    H.modify_ (sim (Backend.Disturb change))
+  SetLink change ->
+    H.modify_ (sim (Backend.SetLink change))
   SkipWarmUp ->
     H.modify_ skipWarmUp
   Reset ->
-    -- A cold machine with the present parameters and recipe.
-    H.modify_ \st -> applyRecipe st.recipe st { world = worldWith (paramsOf st.world), speed = 1 }
+    H.modify_ reset
   Typed key text apply ->
     changeAndStore \st ->
       let
@@ -241,11 +244,6 @@ phoneBar st =
     , chosen (st.phone == 2) "Bench" (Change _ { phone = 2, view = st.view { benchOpen = true } })
     ]
 
-startsShot :: Event -> Boolean
-startsShot = case _ of
-  ShotRequested -> true
-  _ -> false
-
 ------------------------------------------------------------
 -- Rendering
 ------------------------------------------------------------
@@ -253,9 +251,10 @@ startsShot = case _ of
 render :: forall m. State -> H.ComponentHTML Action () m
 render st =
   let
-    w = st.world
-    c = w.ctl
-    wrong = problems w
+    m = st.machine
+    c = m.status
+    simulated = simView st
+    wrong = problems (Machine.silence st.clock m) m simulated
     night = st.theme == Night
     open = st.view.benchOpen
     count = length wrong.lines
@@ -265,7 +264,7 @@ render st =
           [ HH.h1 [ cls "plate" ] [ HH.text "Espresso simulator" ]
           , HH.span [ cls ("chip state-" <> show c.state) ] [ HH.text (show c.state) ]
           , HH.span [ cls "chip" ] [ HH.text ("mode " <> show c.requestedMode) ]
-          , HH.span [ cls "chip" ] [ HH.text (clock w.now <> " at " <> show st.speed <> "x") ]
+          , HH.span [ cls "chip" ] [ HH.text (clock m.at <> " at " <> show simulated.speed <> "x") ]
           -- Problems stay visible here when the bench is put away.
           , if anyProblem wrong then
               HH.button

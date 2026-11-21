@@ -15,10 +15,11 @@ module Sim.Invariants
 
 import Prelude
 
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isJust)
 import Data.Array (filter)
-import Sim.Controller (Ctl, heaterDrawWatts, shotInProgress)
-import Sim.Types (GroupValve(..), MachineState(..), MixValve(..), PowerMode(..), PumpMode(..), Sensors, TwoWay(..))
+import Sim.Controller (heaterDrawWatts)
+import Sim.Link (Status)
+import Sim.Types (Config, GroupValve(..), MachineState(..), MixValve(..), PowerMode(..), PumpMode(..), Sensors, TwoWay(..))
 
 type Check = { name :: String, holds :: Boolean }
 
@@ -30,14 +31,14 @@ rounding = 1.0e-5
 implies :: Boolean -> Boolean -> Boolean
 implies a b = not a || b
 
-checks :: Sensors -> Ctl -> Array Check
-checks s c =
+checks :: Config -> Sensors -> Status -> Array Check
+checks cfg s c =
   let
     a = c.act
-    inShot = shotInProgress c
+    inShot = isJust c.shot
   in
     [ { name: "CircuitBudget"
-      , holds: heaterDrawWatts c.cfg a <= c.cfg.circuitBudgetWatts
+      , holds: heaterDrawWatts cfg a <= cfg.circuitBudgetWatts
       }
     , { name: "NoHeatUnlessAwake"
       , holds:
@@ -62,14 +63,14 @@ checks s c =
       , holds: inShot `implies` (a.mixValve == Regulating)
       }
     , { name: "PaceTrimBounded"
-      , holds: c.paceTrimBar >= -c.cfg.paceLimitBar - rounding && c.paceTrimBar <= c.cfg.paceLimitBar + rounding
+      , holds: c.paceTrimBar >= -cfg.paceLimitBar - rounding && c.paceTrimBar <= cfg.paceLimitBar + rounding
       }
     , { name: "NoPaceOutsideShot"
       , holds: not inShot `implies` (c.paceTrimBar == 0.0)
       }
     , { name: "PressureSetpointUnderLimit"
       , holds: case c.pressureTargetBar of
-          Just bar -> bar <= c.cfg.brewPressureLimitBar - 1.0 + rounding
+          Just bar -> bar <= cfg.brewPressureLimitBar - 1.0 + rounding
           Nothing -> true
       }
     , { name: "NoFillDuringShot"
@@ -77,5 +78,5 @@ checks s c =
       }
     ]
 
-violated :: Sensors -> Ctl -> Array String
-violated s c = map _.name (filter (not <<< _.holds) (checks s c))
+violated :: Config -> Sensors -> Status -> Array String
+violated cfg s c = map _.name (filter (not <<< _.holds) (checks cfg s c))

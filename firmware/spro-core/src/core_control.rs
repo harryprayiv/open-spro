@@ -55,6 +55,9 @@ pub struct Controller {
     pub fault_count: usize,
     pub pump_integral: Real,
     pub mix_trim: Real,
+    /// Flow into the group as estimated at the last cycle. The machine
+    /// has no flow meter, so this is the only flow it can report.
+    pub flow_ml_per_s: Real,
 }
 
 #[derive(Clone, Copy)]
@@ -104,6 +107,7 @@ impl Controller {
             fault_count: 0,
             pump_integral: 0.0,
             mix_trim: 0.0,
+            flow_ml_per_s: 0.0,
         }
     }
 
@@ -260,6 +264,7 @@ impl Controller {
         self.pump_integral = 0.0;
         self.mix_trim = 0.0;
         self.pace_trim_bar = 0.0;
+        self.flow_ml_per_s = 0.0;
     }
 
     /// rule ApplySleep
@@ -553,6 +558,7 @@ impl Controller {
         self.steam_fill(now, s);
         self.run_shot(dt, now, s);
         self.allocate_heaters(now, s);
+        self.flow_ml_per_s = self.flow_estimate(s);
     }
 
     /// rules OverLimit, OverPressure, MixTooHot, InletLostDuringShot and

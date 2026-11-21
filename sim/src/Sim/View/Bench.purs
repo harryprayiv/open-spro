@@ -11,7 +11,6 @@ import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
 import Halogen.HTML as HH
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
-import Sim.Controller (heaterDrawWatts)
 import Sim.Cup as Cup
 import Sim.Curve as Curve
 import Sim.Flavor as Flavor
@@ -26,7 +25,6 @@ import Sim.Update (allShapes, askAdvice, baseShape, changeParams, deleteShape, e
 import Sim.View.Plots (forecastPlot, scopePlot)
 import Sim.View.Wheel (wheel)
 import Sim.View.Widgets (button, chosen, cls, legend, n1, n2, numBox, row, segmented, slider, table)
-import Sim.World (paramsOf, sensors)
 
 ------------------------------------------------------------
 -- Profile designer
@@ -267,24 +265,25 @@ stepEditor st i step =
 scope :: forall w. State -> Array (HH.HTML w Action)
 scope st =
   let
-    w = st.world
-    c = w.ctl
-    s = sensors w
-    budget = toNumber c.cfg.circuitBudgetWatts
+    m = st.machine
+    c = m.status
+    s = m.sensors
+    cfg = st.params.config
+    budget = toNumber cfg.circuitBudgetWatts
   in
-    [ scopePlot budget w.scope
+    [ scopePlot budget m.scope
     , HH.p [ cls "legend" ]
         [ legend "reservoir" "reservoir, C (0 to 125)"
         , legend "group" "group block, C (0 to 125)"
         , legend "steam" "steam, bar (0 to 2.5)"
-        , legend "watts" ("heater draw, W (0 to " <> show c.cfg.circuitBudgetWatts <> ")")
+        , legend "watts" ("heater draw, W (0 to " <> show cfg.circuitBudgetWatts <> ")")
         ]
     , table
-        [ row "Now" (n1 s.brewBoilerC <> " C, " <> n1 s.groupC <> " C, " <> n1 s.steamBar <> " bar, " <> show (heaterDrawWatts c.cfg c.act) <> " W")
-        , row "Window" "the last 30 simulated minutes"
+        [ row "Now" (n1 s.brewBoilerC <> " C, " <> n1 s.groupC <> " C, " <> n1 s.steamBar <> " bar, " <> show c.heaterWatts <> " W")
+        , row "Window" "the last 30 minutes of the machine's clock"
         ]
     , HH.p [ cls "note" ] [ HH.text "What the present physics implies. Change the physics under Settings and these move with it." ]
-    , table (map (\reading -> row reading.label reading.value) (Params.readings (paramsOf w)))
+    , table (map (\reading -> row reading.label reading.value) (Params.readings st.params))
     ]
 
 ------------------------------------------------------------
@@ -316,7 +315,7 @@ groupShort = case _ of
 entryRow :: forall w. State -> Entry -> HH.HTML w Action
 entryRow st entry =
   let
-    params = paramsOf st.world
+    params = st.params
     value = entry.get params
     apply v = changeParams (entry.set (clamp entry.min entry.max v))
     changed = value /= entry.get Params.defaults

@@ -528,9 +528,20 @@ fn the_status_reports_the_shot_and_the_faults() {
     assert_eq!((out[21], out[22], out[23]), (1.0, 0.0, 1.0));
     assert!(out[15].is_nan(), "a flow step has no pressure setpoint");
     assert_eq!(out[16], 2.0);
-    message[3] = 11.5;
+    message[3] = 1.0;
     assert_eq!(
         core_wire::apply(&mut c, core_wire::OP_TICK, 0.025, 1.025, &message),
+        Ok(())
+    );
+    core_wire::write_status(&c, &mut out);
+    assert!(
+        (out[33] - 2.0).abs() < 1.0e-5,
+        "in a flow step the estimate is the flow asked for, got {}",
+        out[33]
+    );
+    message[3] = 11.5;
+    assert_eq!(
+        core_wire::apply(&mut c, core_wire::OP_TICK, 0.025, 1.05, &message),
         Ok(())
     );
     core_wire::write_status(&c, &mut out);
@@ -538,9 +549,10 @@ fn the_status_reports_the_shot_and_the_faults() {
     assert_eq!((out[21], out[25], out[26]), (0.0, 1.0, ShotState::Aborted as u8 as f64));
     assert!(out[29].is_nan(), "an aborted shot has no final weight");
     assert_eq!(out[32], 1.0);
-    assert_eq!(out[33], FaultKind::OverPressure as u8 as f64);
-    assert_eq!(out[34], 1.025);
-    assert!(out[35].is_nan(), "the fault has not been cleared");
+    assert_eq!(out[33], 0.0, "a faulted machine reports no flow");
+    assert_eq!(out[34], FaultKind::OverPressure as u8 as f64);
+    assert_eq!(out[35], 1.05);
+    assert!(out[36].is_nan(), "the fault has not been cleared");
 }
 
 #[test]

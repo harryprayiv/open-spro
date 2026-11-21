@@ -9,7 +9,7 @@ import Data.Int (toNumber)
 import Data.String (joinWith)
 import Halogen.HTML as HH
 import Sim.View.Svg (at, line, num, polyline, svg)
-import Sim.World (Sample)
+import Sim.Link (Sample)
 
 width :: Number
 width = 600.0
