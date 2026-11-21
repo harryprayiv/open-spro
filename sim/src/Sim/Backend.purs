@@ -24,6 +24,7 @@ module Sim.Backend
   , request
   , command
   , view
+  , readyAt
   ) where
 
 import Prelude
@@ -37,7 +38,7 @@ import Sim.Controller (status)
 import Sim.Link (Message(..), Request)
 import Sim.Params (Params)
 import Sim.Plant (Brewed, Disturbance, Puck, brewed)
-import Sim.World (World, dt, send, sensors, setParams, stepWorld, warmUp, worldWith)
+import Sim.World (World, dt, readyIn, send, sensors, setParams, stepWorld, warmUp, worldWith)
 
 -- | How the link behaves. The delay applies to each direction, so a
 -- | request is answered after twice the delay at the least.
@@ -140,6 +141,13 @@ command cmd (Backend b) = Backend case cmd of
   SetParams params -> b { world = setParams params b.world }
   LoadPuck puck -> b { world = b.world { puck = puck } }
   SetLink change -> b { link = change b.link }
+
+-- | The time on the machine's clock at which a heating machine will
+-- | report ready if it is left alone. This runs the simulation forward
+-- | to find out, which takes the better part of a second, so it is
+-- | asked for once and not on every frame.
+readyAt :: Backend -> Maybe Number
+readyAt (Backend b) = map (_ + b.world.now) (readyIn b.world)
 
 view :: Backend -> SimView
 view (Backend b) =

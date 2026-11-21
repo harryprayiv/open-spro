@@ -21,9 +21,11 @@ module Sim.View.Front
 import Prelude
 
 import Data.Array (concat, mapWithIndex, range)
+import Data.Array as Array
 import Data.Int (toNumber)
+import Data.Int as Int
 import Data.Maybe (Maybe(..))
-import Data.Number (cos, floor, pi, sin)
+import Data.Number (abs, cos, floor, pi, sin)
 import Data.Number.Format (fixed, toStringWith)
 import Data.String (joinWith, toLower)
 import Halogen.HTML as HH
@@ -31,10 +33,13 @@ import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
 import Halogen.HTML.Properties as HP
 import Sim.Link (Event(..), FaderMode(..), faderWord, nextFaderMode)
+import Sim.Mascot (Mascot)
+import Sim.Mascot as Mascot
 import Sim.Model (Action(..))
+import Sim.Palette (leds, scheme)
 import Sim.Tint (coolToWarm)
-import Sim.Types (MachineState(..))
-import Sim.View.Svg (Attr, at, circle, defs, falling, fitted, g, glow, label, line, num, path, polyline, rect, svg, texture)
+import Sim.Types (MachineState(..), PowerMode(..))
+import Sim.View.Svg (Attr, at, circle, defs, falling, fitted, g, glow, label, line, num, path, picture, polyline, rect, svg, texture)
 
 type FrontInput =
   { now :: Number
@@ -53,6 +58,8 @@ type FrontInput =
   , groupHeaterOn :: Boolean
   , pouring :: Boolean
   , steaming :: Boolean
+  -- Whether the steam lever is pulled down, which opens the valve.
+  , steamOpen :: Boolean
   -- Where the fader is along its travel, from 0 to 1, whether a shot
   -- is running and whether it is being pulled by hand.
   , fader :: Number
@@ -78,6 +85,15 @@ type Ink =
   { span :: Number
   , place :: Number
   , running :: Boolean
+  -- whether the machine is asleep
+  , asleep :: Boolean
+  -- whether the machine is warming up with no shot running, and how
+  -- many seconds it has to go if that is known
+  , heating :: Boolean
+  , readyIn :: Maybe Number
+  -- whether the machine has been ready before, in which case heating
+  -- is a short spell and not the first warm-up
+  , settled :: Boolean
   -- the profile's steps, and which of them the shot is in
   , bands :: Array { start :: Number, end :: Number }
   , step :: Maybe Int
@@ -89,8 +105,10 @@ type Ink =
   , limits :: Maybe { low :: Number, high :: Number }
   }
 
+-- | The red of a limit: the arcs on the dial and the outline of a
+-- | faulted machine.
 bad :: String
-bad = "#d32f2f"
+bad = scheme.alarm
 
 -- | The palette of the front: black lettering on steel, off-white
 -- | figures in black windows, and one orange for whatever is live.
@@ -110,13 +128,13 @@ window :: String
 window = "#141516"
 
 orange :: String
-orange = "#e2572b"
+orange = scheme.orange
 
 sans :: String
 sans = "'Helvetica Neue', Helvetica, Arial, sans-serif"
 
 gold :: String
-gold = "#c9a24a"
+gold = scheme.gold
 
 -- | What differs between the day face and the night face.
 type Look =
@@ -278,11 +296,16 @@ dualGauge k cx cy brew steam =
             ]
       )
 
--- | A lamp: a small dot that is lit or not, with its name under it.
+-- | A lamp: a small dot that is lit or not, with its name under it. A
+-- | lit lamp has a halo, which shows more in the dark.
 lamp :: forall w i. Look -> Number -> Number -> String -> Boolean -> String -> HH.HTML w i
 lamp k x y title lit colour =
   g []
     [ circle
+        [ at "cx" (num x), at "cy" (num y), at "r" "7"
+        , at "fill" colour, at "opacity" (if not lit then "0" else if k.night then "0.3" else "0.16")
+        ]
+    , circle
         [ at "cx" (num x), at "cy" (num y), at "r" "3.6"
         , at "fill" (if lit then colour else k.dark)
         , at "stroke" ink, at "stroke-width" "0.6"
@@ -319,8 +342,22 @@ readout k y title value fraction =
 -- | pressure asked for so far is a solid black one. An upright line
 -- | marks how far the shot has run. E-ink has no colour and holds its
 -- | picture with the power off.
-inkDisplay :: forall w i. Look -> Ink -> HH.HTML w i
-inkDisplay k page =
+-- |
+-- | While the machine is asleep the display says so, with a slow
+-- | snore drawn on it, and pressing it wakes the machine for brewing
+-- | and steam. If `Sim.Mascot` names a character, the character is
+-- | shown in place of the snore, saying its lines. `now` is the time, in
+-- | seconds, that picks which of its frames is up.
+-- |
+-- | While the machine warms up for the first time the display says so
+-- | instead, with the time it has to go counting down. Once it has been
+-- | ready, a later spell of heating, as after a change of profile or of
+-- | beans, leaves the timeline up, so the shape just chosen can be
+-- | seen, and says how long is left in a line along the bottom. In the simulator the wait can be
+-- | skipped, and the display says that too: pressing it puts the
+-- | machine at temperature at once.
+inkDisplay :: forall w. Look -> Number -> Ink -> HH.HTML w Action
+inkDisplay k now page =
   let
     left = 177.0
     top = 93.0
@@ -354,6 +391,154 @@ inkDisplay k page =
     limits = case page.limits of
       Just held -> [ limit held.low, limit held.high ]
       Nothing -> []
+    middle = left + width / 2.0
+    words size weight spacing colour down text =
+      label
+        [ at "x" (num middle), at "y" (num (top + down)), at "text-anchor" "middle"
+        , at "font-size" size, at "font-family" sans, at "font-weight" weight
+        , at "letter-spacing" spacing, at "fill" colour
+        ]
+        text
+    twoDigits n = if n < 10 then "0" <> show n else show n
+    countdown seconds =
+      let
+        whole = Int.ceil seconds
+      in
+        show (whole / 60) <> ":" <> twoDigits (whole `mod` 60)
+    press tip action =
+      HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "rect")
+        [ HP.attr (AttrName "x") (num left), HP.attr (AttrName "y") (num top)
+        , HP.attr (AttrName "width") (num width), HP.attr (AttrName "height") (num height)
+        , HP.attr (AttrName "fill") "transparent"
+        , HP.attr (AttrName "class") "fader-press"
+        , HE.onClick \_ -> action
+        ]
+        [ HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "title") [] [ HH.text tip ] ]
+    underline halfWidth =
+      line
+        [ at "x1" (num (middle - halfWidth)), at "x2" (num (middle + halfWidth)), at "y1" (num (top + 49.8)), at "y2" (num (top + 49.8))
+        , at "stroke" "#1c1c1a", at "stroke-width" "0.35"
+        ]
+    -- One z of the snore. The stylesheet brings the three in one after
+    -- another and then clears them, in steps, as e-ink would.
+    z order across down size =
+      label
+        [ at "class" ("snore snore-" <> show order), at "x" (num (middle + across)), at "y" (num (top + down))
+        , at "text-anchor" "middle", at "font-size" size, at "font-family" sans, at "font-weight" "300"
+        , at "font-style" "italic", at "fill" "#1c1c1a"
+        ]
+        "z"
+    wake = press "Wake the machine, for brewing and steam" (Send (WakeRequested Full))
+    -- A character on the left, in greys whatever its colours, and what
+    -- it says in a bubble on the right with a tail towards it.
+    character :: Mascot -> Array (HH.HTML w Action)
+    character mascot =
+      let
+        lines = Array.take 4 mascot.says
+        count = toNumber (Array.length lines)
+        bubbleTop = top + 26.0 - (count * 6.4 + 7.0) / 2.0
+        say i text =
+          label
+            [ at "x" (num (left + 66.5)), at "y" (num (bubbleTop + 8.6 + 6.4 * toNumber i)), at "text-anchor" "middle"
+            , at "font-size" "4.8", at "font-family" sans, at "letter-spacing" "0.3", at "fill" "#1c1c1a"
+            ]
+            text
+        face = case Mascot.frameAt now mascot of
+          Just file ->
+            [ picture file (left + 3.0) (top + 5.0) 40.0 42.0
+                [ at "style" "filter: grayscale(1) contrast(1.15)" ]
+            ]
+          Nothing -> []
+        bubble =
+          if Array.null lines then []
+          else
+            [ path
+                [ at "d"
+                    ( "M" <> num (left + 46.5) <> "," <> num (top + 23.0) <> " L" <> num (left + 42.0) <> "," <> num (top + 26.0)
+                        <> " L" <> num (left + 46.5) <> "," <> num (top + 29.0)
+                    )
+                , at "fill" "#f1f2ec", at "stroke" "#1c1c1a", at "stroke-width" "0.5", at "stroke-linejoin" "round"
+                ]
+            , rect
+                [ at "x" (num (left + 46.0)), at "y" (num bubbleTop), at "width" "41", at "height" (num (count * 6.4 + 7.0))
+                , at "rx" "4", at "fill" "#f1f2ec", at "stroke" "#1c1c1a", at "stroke-width" "0.5"
+                ]
+            -- the bubble's own edge is hidden where the tail joins it
+            , line
+                [ at "x1" (num (left + 46.0)), at "x2" (num (left + 46.0)), at "y1" (num (top + 23.6)), at "y2" (num (top + 28.4))
+                , at "stroke" "#f1f2ec", at "stroke-width" "0.9"
+                ]
+            ]
+      in
+        face <> bubble <> Array.mapWithIndex say lines <> [ wake ]
+    sleeping = case Mascot.asleep of
+      Just mascot -> character mascot
+      Nothing -> snoring
+    snoring =
+      [ words "5" "400" "1.6" "#55564f" 11.0 "ASLEEP"
+      , line
+          [ at "x1" (num (middle - 14.0)), at "x2" (num (middle + 14.0)), at "y1" (num (top + 15.0)), at "y2" (num (top + 15.0))
+          , at "stroke" "#8f908a", at "stroke-width" "0.5"
+          ]
+      , z 1 (-11.0) 38.0 "8"
+      , z 2 (-1.0) 33.0 "12"
+      , z 3 12.0 27.5 "16"
+      , words "4.6" "400" "0.4" "#1c1c1a" 48.5 "press here to wake the machine"
+      , underline 37.0
+      , wake
+      ]
+    remaining = case page.readyIn of
+      Just seconds -> countdown seconds
+      Nothing -> "--:--"
+    -- A short spell of heating on a machine that has been ready: one
+    -- line along the bottom of the timeline.
+    reheating =
+      [ rect [ at "x" (num left), at "y" (num (top + height - 8.5)), at "width" (num width), at "height" "8.5", at "fill" "#1c1c1a" ]
+      , label
+          [ at "x" (num (left + 3.0)), at "y" (num (top + height - 2.6)), at "font-size" "4.8", at "font-family" sans
+          , at "letter-spacing" "0.3", at "fill" "#e3e4dd"
+          ]
+          ("heating  " <> remaining)
+      , label
+          [ at "x" (num (left + width - 3.0)), at "y" (num (top + height - 2.6)), at "text-anchor" "end", at "font-size" "4.8"
+          , at "font-family" sans, at "letter-spacing" "0.3", at "fill" "#e3e4dd", at "text-decoration" "underline"
+          ]
+          "press to skip"
+      , press "Skip the wait. Only the simulator can do this." SkipWarmUp
+      ]
+    warming =
+      [ words "5" "400" "1.6" "#55564f" 11.0 "WARMING UP"
+      , line
+          [ at "x1" (num (middle - 14.0)), at "x2" (num (middle + 14.0)), at "y1" (num (top + 15.0)), at "y2" (num (top + 15.0))
+          , at "stroke" "#8f908a", at "stroke-width" "0.5"
+          ]
+      , words "17" "300" "0.5" "#1c1c1a" 33.0 remaining
+      , words "4.6" "400" "0.4" "#55564f" 41.5 "until the machine is ready"
+      , words "4.6" "400" "0.4" "#1c1c1a" 48.5 "press here to skip the wait"
+      , underline 30.0
+      , press "Skip the warm-up. Only the simulator can do this." SkipWarmUp
+      ]
+    shotView =
+      concat (mapWithIndex band page.bands)
+        <> limits
+        <>
+          [ polyline
+              [ at "fill" "none", at "points" (points page.target)
+              , at "stroke" "#6f706a", at "stroke-width" "0.9", at "stroke-dasharray" "2 1.5"
+              ]
+          , polyline
+              [ at "fill" "none", at "points" (points page.drawn)
+              , at "stroke" "#1c1c1a", at "stroke-width" "1.4", at "stroke-linejoin" "round"
+              ]
+          ]
+        <> playLine
+        <>
+          [ label
+              [ at "x" (num (left + width - 2.0)), at "y" (num (top + height - 2.5)), at "text-anchor" "end"
+              , at "font-size" "5.5", at "font-family" sans, at "fill" "#1c1c1a"
+              ]
+              (toStringWith (fixed 0) (if page.running then page.place else span) <> " s")
+          ]
     playLine =
       if page.running then
         [ line
@@ -367,30 +552,16 @@ inkDisplay k page =
       ( [ rect [ at "x" "172", at "y" "88", at "width" "101", at "height" "62", at "rx" "3", at "fill" window ]
         , rect [ at "x" (num left), at "y" (num top), at "width" (num width), at "height" (num height), at "fill" "#e3e4dd" ]
         ]
-          <> concat (mapWithIndex band page.bands)
-          <> limits
           <>
-            [ polyline
-                [ at "fill" "none", at "points" (points page.target)
-                , at "stroke" "#6f706a", at "stroke-width" "0.9", at "stroke-dasharray" "2 1.5"
-                ]
-            , polyline
-                [ at "fill" "none", at "points" (points page.drawn)
-                , at "stroke" "#1c1c1a", at "stroke-width" "1.4", at "stroke-linejoin" "round"
-                ]
-            ]
-          <> playLine
-          <>
-            [ label
-                [ at "x" (num (left + width - 2.0)), at "y" (num (top + height - 2.5)), at "text-anchor" "end"
-                , at "font-size" "5.5", at "font-family" sans, at "fill" "#1c1c1a"
-                ]
-                (toStringWith (fixed 0) (if page.running then page.place else span) <> " s")
-            ]
+            ( if page.asleep then sleeping
+              else if page.heating && not page.settled then warming
+              else if page.heating then shotView <> reheating
+              else shotView
+            )
           <>
             -- By night the panel has only its dim front light.
             ( if k.night then
-                [ rect [ at "x" (num left), at "y" (num top), at "width" (num width), at "height" (num height), at "fill" "#1a1206", at "opacity" "0.42" ] ]
+                [ rect [ at "x" (num left), at "y" (num top), at "width" (num width), at "height" (num height), at "fill" "#1a1206", at "opacity" "0.42", at "pointer-events" "none" ] ]
               else []
             )
       )
@@ -465,9 +636,9 @@ stateText = case _ of
 stateColour :: MachineState -> String
 stateColour = case _ of
   Sleeping -> "#8d9297"
-  Heating -> "#e2572b"
-  Ready -> "#2f9e5b"
-  Faulted -> "#d32f2f"
+  Heating -> leds.working
+  Ready -> leds.ready
+  Faulted -> leds.fault
 
 faulted :: MachineState -> Boolean
 faulted = case _ of
@@ -517,19 +688,108 @@ front v =
       "M" <> num (178.0 - inset top) <> "," <> num top
         <> " L" <> num (222.0 + inset top) <> "," <> num top
         <> " L221.7,392 L178.3,392 Z"
-    puff n =
+    -- Before the first drops fall, water pushed into the puck shows on
+    -- the underside of the bottomless basket: beads form, and a bulge
+    -- of coffee swells in the middle. How far it swells goes with the
+    -- pressure behind it, from nothing at 1 bar to its fullest at 9,
+    -- and with how hot the water is, from nothing at 70 C to its
+    -- fullest at 90. A soak at low pressure wets the puck and shows
+    -- nothing here. The first gram or so leaves the bulge as drips.
+    -- Then the stream takes over, and the bulge is drawn down into it
+    -- over the first 4 g in the cup.
+    swell =
+      if v.running then
+        clamp 0.0 1.0 ((v.brewBar - 1.0) / 8.0)
+          * clamp 0.0 1.0 ((v.waterC - 70.0) / 20.0)
+          * clamp 0.0 1.0 (1.0 - v.cupGrams / 4.0)
+      else 0.0
+    -- The stream proper starts once the drips have run together.
+    streaming = v.pouring && v.cupGrams > 1.2
+    bulge =
+      if swell <= 0.0 then []
+      else
+        let
+          -- it trembles a little as it hangs
+          depth = (0.6 + 9.0 * swell) * (if phase < 0.5 then 1.0 else 1.06)
+          reach = 8.0 + 30.0 * swell
+          bead x =
+            let
+              -- the beads nearest the middle are the largest
+              r = (0.6 + 1.7 * swell) * (1.0 - abs (x - 200.0) / 70.0)
+            in
+              circle [ at "cx" (num x), at "cy" (num (338.0 + r * 0.7)), at "r" (num r), fill v.streamColour ]
+        in
+          map bead [ 166.0, 177.0, 188.0, 212.0, 223.0, 234.0 ]
+            <>
+              [ path
+                  [ at "d"
+                      ( "M" <> num (200.0 - reach) <> ",338 Q200," <> num (338.0 + 2.0 * depth) <> " "
+                          <> num (200.0 + reach) <> ",338 Z"
+                      )
+                  , fill v.streamColour
+                  ]
+              ]
+            <>
+              -- drips off the lowest point of it, until the stream starts
+              ( if v.pouring && not streaming then
+                  let
+                    from = 338.0 + depth
+                    fall offset = from + (top - from) * (phase + offset - floor (phase + offset))
+                    drip offset =
+                      path
+                        [ at "d"
+                            ( "M200," <> num (fall offset - 3.2) <> " Q202.2," <> num (fall offset + 0.6) <> " 200,"
+                                <> num (fall offset + 1.6) <> " Q197.8," <> num (fall offset + 0.6) <> " 200," <> num (fall offset - 3.2) <> " Z"
+                            )
+                        , fill v.streamColour
+                        ]
+                  in
+                    [ drip 0.0, drip 0.5 ]
+                else []
+              )
+            <>
+              -- a glint on it, since it is wet
+              [ path
+                  [ at "d"
+                      ( "M" <> num (200.0 - reach * 0.45) <> "," <> num (338.0 + depth * 0.35) <> " Q"
+                          <> num (200.0 - reach * 0.2) <> "," <> num (338.0 + depth * 0.75) <> " 200,"
+                          <> num (338.0 + depth * 0.8)
+                      )
+                  , fill "none", at "stroke" "#ffffff", at "stroke-width" "0.7", at "stroke-linecap" "round", at "opacity" "0.45"
+                  ]
+              ]
+    -- Steam off the tip of the wand, drawn as a cartoon would: a run
+    -- of clouds that swell as they fall away, each one three
+    -- overlapping rounds with one outline about the lot. They stay
+    -- white the whole way, so they show against the dark, with a pale
+    -- haze behind each, and the last of them shrinks to nothing
+    -- instead of fading to grey.
+    cloud scale n =
       let
-        drop = (toNumber n + phase) * 9.0
-      in
-        circle
-          [ at "cx" (num (368.5 + (if n `mod` 2 == 0 then -3.0 else 3.0)))
-          , at "cy" (num (366.0 + drop))
-          , at "r" (num (3.0 + drop / 5.0))
-          , fill "#ffffff"
-          , at "stroke" "#b9bec4"
-          , at "stroke-width" "0.6"
-          , at "opacity" (num (0.75 - drop / 40.0))
+        drop = (toNumber n + phase) * 10.0
+        -- full size until the last stretch of the fall, then closing up
+        left = clamp 0.0 1.0 ((50.0 - drop) / 12.0)
+        size = scale * (3.6 + drop / 3.6) * left
+        cx = 368.5 + (if n `mod` 2 == 0 then -1.0 else 1.0) * (2.0 + drop / 6.0)
+        cy = 364.0 + drop
+        rounds =
+          [ { x: cx, y: cy, r: size }
+          , { x: cx - size * 0.85, y: cy + size * 0.25, r: size * 0.68 }
+          , { x: cx + size * 0.85, y: cy + size * 0.2, r: size * 0.72 }
           ]
+        haze = circle [ at "cx" (num cx), at "cy" (num cy), at "r" (num (size * 2.1)), fill "#ffffff", at "opacity" "0.1" ]
+        edge c = circle [ at "cx" (num c.x), at "cy" (num c.y), at "r" (num (c.r + 0.9)), fill (if v.night then "#b9bec4" else "#55595d") ]
+        body c = circle [ at "cx" (num c.x), at "cy" (num c.y), at "r" (num c.r), fill "#ffffff" ]
+      in
+        g [] ([ haze ] <> map edge rounds <> map body rounds)
+    -- With the boiler at pressure the valve gives a full run of steam.
+    -- Opened on a boiler with no pressure in it, as on a machine woken
+    -- for brewing only or one still warming up, it gives a thin wisp:
+    -- the lever has done something, and there is nothing behind it.
+    steam
+      | v.steaming = map (cloud 1.0) (range 0 4)
+      | v.steamOpen = map (cloud 0.32) (range 0 1)
+      | otherwise = []
   in
     svg [ at "viewBox" "0 0 400 444", at "class" "machine" ]
       ( [ defs
@@ -547,12 +807,34 @@ front v =
           <> faced "stone" "#8b8a86" [ at "x" "0", at "y" "426", at "width" "400", at "height" "18", at "rx" "3" ]
           <> (if v.night then [ rect [ at "x" "0", at "y" "426", at "width" "400", at "height" "18", at "rx" "3", fill "#000000", at "opacity" "0.72" ] ] else [])
           -- the steam turret: a steel barrel standing out of the right
-          -- flank, with the steam valve's cedar knob on top
+          -- flank, with the steam lever in a slot on top
           <>
             [ rect [ at "x" "364", at "y" "152", at "width" "28", at "height" "42", at "rx" "3", fill k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.8" ]
-            , rect [ at "x" "376", at "y" "142", at "width" "6", at "height" "10", fill k.metal, at "stroke" k.metalEdge, at "stroke-width" "0.6" ]
-            , rect [ at "x" "369", at "y" "130", at "width" "20", at "height" "13", at "rx" "2", fill "#1a110c" ]
-            , rect [ at "x" "369", at "y" "130", at "width" "20", at "height" "13", at "rx" "2", fill "url(#wood)", at "opacity" "0.55" ]
+            , rect [ at "x" "373", at "y" "149", at "width" "10", at "height" "5", at "rx" "1.5", fill ink ]
+            -- The steam lever, as on a slot machine: an arm with a ball
+            -- on the end. It stands up with the valve shut. Pulled, it
+            -- swings towards whoever is at the machine and down, which
+            -- from the front is the arm shortening to nothing and then
+            -- growing downwards. The stylesheet moves it; this only
+            -- says which way it is.
+            , g [ at "class" ("lever" <> (if v.steamOpen then " pulled" else "")) ]
+                [ line
+                    [ at "x1" "378", at "y1" "152", at "x2" "378", at "y2" "124"
+                    , at "stroke" (if v.night then "#8b9197" else "#3a3d40"), at "stroke-width" "3.4", at "stroke-linecap" "round"
+                    ]
+                , circle [ at "cx" "378", at "cy" "120", at "r" "6.5", fill scheme.orange, at "stroke" ink, at "stroke-width" "0.8" ]
+                , circle [ at "cx" "376", at "cy" "118", at "r" "1.8", fill "#ffffff", at "opacity" "0.55" ]
+                ]
+            , HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "rect")
+                [ HP.attr (AttrName "x") "364", HP.attr (AttrName "y") "110"
+                , HP.attr (AttrName "width") "30", HP.attr (AttrName "height") "84"
+                , HP.attr (AttrName "fill") "transparent"
+                , HP.attr (AttrName "class") "fader-press"
+                , HE.onClick \_ -> Disturb \d -> d { steamValveOpen = not d.steamValveOpen }
+                ]
+                [ HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "title") []
+                    [ HH.text (if v.steamOpen then "Push the lever up to shut the steam off" else "Pull the lever down for steam") ]
+                ]
             ]
           -- the body: a band of charred cedar across the top and a
           -- face of brushed steel under it
@@ -576,17 +858,17 @@ front v =
                 , at "letter-spacing" "0.5", fill k.lettering
                 ]
                 (stateText v.state)
-            , inkDisplay k v.ink
+            , inkDisplay k v.now v.ink
             , faderWindow k v.faderValue v.fader
             -- the three temperatures, one over the other
             , readout k 96.0 "reservoir" (num v.reservoirC) (warmth 20.0 110.0 v.reservoirC)
             , readout k 119.0 "group" (num v.groupC) (warmth 20.0 100.0 v.groupC)
             , readout k 142.0 "water" (num v.waterC) (warmth 20.0 100.0 v.waterC)
             -- the lamps, in a row
-            , lamp k 200.0 172.0 "reservoir" v.brewElementOn orange
-            , lamp k 240.0 172.0 "steam" v.steamElementOn orange
-            , lamp k 280.0 172.0 "group" v.groupHeaterOn orange
-            , lamp k 330.0 172.0 "problem" v.problem bad
+            , lamp k 200.0 172.0 "reservoir" v.brewElementOn leds.working
+            , lamp k 240.0 172.0 "steam" v.steamElementOn leds.working
+            , lamp k 280.0 172.0 "group" v.groupHeaterOn leds.working
+            , lamp k 330.0 172.0 "problem" v.problem leds.fault
             -- the fader: a black strip across the front with a slot in
             -- it and a scale. The cap is the slider laid over this
             -- drawing by the page, so it can be taken in hand.
@@ -594,7 +876,7 @@ front v =
             , rect [ at "x" "56", at "y" "245", at "width" "288", at "height" "8", at "rx" "4", fill "#000000", at "stroke" "#3a3d40", at "stroke-width" "0.8" ]
             , rect
                 [ at "x" "58", at "y" "247.5", at "width" (num (max 0.0 (capX - 58.0))), at "height" "3", at "rx" "1.5"
-                , fill (if v.manual then orange else if v.running then k.lit v.fader else "#3a3d40")
+                , fill (if v.manual then leds.byHand else if v.running then k.lit v.fader else "#3a3d40")
                 ]
             , g [] (map mark (range 0 10))
             , selector k v.mode
@@ -624,7 +906,7 @@ front v =
             -- a shot that is running.
             [ rect [ at "x" "150", at "y" "276", at "width" "100", at "height" "22", at "rx" "2", fill "none", at "stroke" steelEdge, at "stroke-width" "0.8" ]
             , circle [ at "cx" "200", at "cy" "287", at "r" "7.5", fill ink ]
-            , circle [ at "cx" "200", at "cy" "287", at "r" "3.2", fill (if v.running then orange else "#2f9e5b") ]
+            , circle [ at "cx" "200", at "cy" "287", at "r" "3.2", fill (if v.running then leds.working else leds.ready) ]
             , HH.elementNS (Namespace "http://www.w3.org/2000/svg") (ElemName "circle")
                 [ HP.attr (AttrName "cx") "200", HP.attr (AttrName "cy") "287", HP.attr (AttrName "r") "13"
                 , HP.attr (AttrName "fill") "transparent"
@@ -669,7 +951,7 @@ front v =
                 (num v.cupGrams <> " g")
             ]
           <>
-            ( if v.pouring then
+            ( if streaming then
                 -- the streams off the basket gather into one cone, then
                 -- fall as a single column that fattens with the flow
                 [ path
@@ -686,5 +968,6 @@ front v =
                 ]
               else []
             )
-          <> (if v.steaming then map puff (range 0 3) else [])
+          <> bulge
+          <> steam
       )

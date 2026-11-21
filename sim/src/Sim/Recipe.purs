@@ -282,7 +282,7 @@ shownStep r i = if r.soakS > 0.0 && i >= 1 then i + 1 else i
 -- | roast. Everything else is a departure from this.
 house :: Recipe
 house =
-  { name: "House espresso", roaster: "", roastedOn: "", roast: FullCity
+  { name: "House Full City Triple", roaster: "Osaka Jazz Kissa", roastedOn: "10/27/2026", roast: FullCity
   , profileIndex: 0, doseG: 22.0, ratio: 2.0, tempC: 93.0, seconds: 30.0, paced: true, grind: 2.5, soakS: 0.0
   }
 

@@ -17,6 +17,7 @@ import Data.Maybe (Maybe(..), isJust)
 import Halogen.HTML as HH
 import Sim.Link (Event(..), FaderMode(..))
 import Sim.Model (Action(..), State)
+import Sim.Types (MachineState(..))
 import Sim.Update (playheadAt, segments, timelineSpan)
 import Sim.View.Front (Ink)
 import Sim.View.Widgets (button, cls, n1)
@@ -32,6 +33,12 @@ inkOf st =
     { span: timelineSpan st
     , place: playheadAt st
     , running: isJust shot
+    , asleep: st.machine.status.state == Sleeping
+    , heating: st.machine.status.state == Heating && not (isJust shot)
+    , settled: st.settled
+    , readyIn: case st.warming of
+        Just { at: Just at } -> Just (max 0.0 (at - st.machine.at))
+        _ -> Nothing
     , bands: map (\seg -> { start: seg.start, end: seg.end }) (segments st)
     -- With the pressure held by hand the steps stand still, so none of
     -- them is marked as the one the shot is in.

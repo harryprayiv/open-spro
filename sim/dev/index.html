@@ -8,7 +8,7 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <meta name="theme-color" content="#17120f">
-    <title>Espresso simulator</title>
+    <title>open-spro</title>
     <style>
       /* The design language of the kissaten press packet: flat paper and
          ink, square keys, 2px rules in deep green, burnt orange for the
@@ -19,18 +19,12 @@
       * { box-sizing: border-box; }
       body { margin: 0; background: #17120f; font-family: "Zen Kaku Gothic New", "Noto Sans JP", "Helvetica Neue", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
 
-      .theme-day {
-        --paper: #f4eedf; --card: #ffffff; --ink: #17120f; --muted: #625a50; --faint: #9c948a;
-        --rule: #264a3a; --green: #4d8a60; --sage: #9fbba6; --orange: #e88a22; --burnt: #bc6a14; --gold: #c9a24a;
-        --key: #ffffff; --key-ink: #17120f; --on: #264a3a; --on-ink: #ffffff; --line: rgba(23, 18, 15, 0.14);
-        --bad: #b3261e;
-      }
-      .theme-night {
-        --paper: #17120f; --card: #211a15; --ink: #f4eedf; --muted: #b9b0a3; --faint: #8a8176;
-        --rule: #9fbba6; --green: #4d8a60; --sage: #9fbba6; --orange: #e88a22; --burnt: #e88a22; --gold: #c9a24a;
-        --key: #211a15; --key-ink: #f4eedf; --on: #4d8a60; --on-ink: #ffffff; --line: rgba(244, 238, 223, 0.16);
-        --bad: #ff7b70;
-      }
+      /* The colours are not written here. The variables --paper, --card,
+         --ink, --muted, --faint, --rule, --green, --sage, --orange,
+         --burnt, --gold, --key, --key-ink, --on, --on-ink, --line and
+         --bad are set on .page by the program, from Sim/Palette.purs,
+         for the day theme or the night theme. That file is the one
+         place to change them. */
 
       /* The page is exactly one screen tall. Panes scroll inside themselves. */
       .page { height: 100vh; display: flex; flex-direction: column; color: var(--ink); background: var(--paper); transition: background 0.3s ease, color 0.3s ease; }
@@ -120,11 +114,27 @@
       }
       .fader-wrap .fader:hover::-webkit-slider-thumb, .fader-wrap .fader:active::-webkit-slider-thumb {
         background: linear-gradient(90deg, #d9dcdf 0 44%, #1c1d1f 44% 56%, #d9dcdf 56% 100%); border-color: #55595d;
-        box-shadow: 0 3px 8px rgba(0, 0, 0, 0.7), 0 0 0 2px rgba(226, 87, 43, 0.55);
+        box-shadow: 0 3px 8px rgba(0, 0, 0, 0.7), 0 0 0 2px var(--orange);
       }
-      .fader-wrap .fader.by-hand::-webkit-slider-thumb { background: linear-gradient(90deg, #d9dcdf 0 44%, #e2572b 44% 56%, #d9dcdf 56% 100%); }
-      .fader-wrap .fader.by-hand::-moz-range-thumb { background: linear-gradient(90deg, #d9dcdf 0 44%, #e2572b 44% 56%, #d9dcdf 56% 100%); }
+      .fader-wrap .fader.by-hand::-webkit-slider-thumb { background: linear-gradient(90deg, #d9dcdf 0 44%, var(--gold) 44% 56%, #d9dcdf 56% 100%); }
+      .fader-wrap .fader.by-hand::-moz-range-thumb { background: linear-gradient(90deg, #d9dcdf 0 44%, var(--gold) 44% 56%, #d9dcdf 56% 100%); }
       .fader-press { cursor: pointer; }
+      /* The snore on the e-ink display of a sleeping machine: three z's
+         that come in one after another, hold, and clear. Each change
+         is a step with nothing in between, as e-ink redraws. */
+      .snore { opacity: 0; animation: 4.8s step-end infinite; }
+      .snore-1 { animation-name: snore-1; }
+      .snore-2 { animation-name: snore-2; }
+      .snore-3 { animation-name: snore-3; }
+      @keyframes snore-1 { 0% { opacity: 0; } 15% { opacity: 1; } 90% { opacity: 0; } }
+      @keyframes snore-2 { 0% { opacity: 0; } 35% { opacity: 1; } 90% { opacity: 0; } }
+      @keyframes snore-3 { 0% { opacity: 0; } 55% { opacity: 1; } 90% { opacity: 0; } }
+      /* The steam lever. It is drawn standing up, and pulled it flips
+         about the slot it stands in, passing through no length at all,
+         which is what an arm swinging towards you looks like from the
+         front. The slot is at 378, 152 in the drawing. */
+      .lever { transform-origin: 378px 152px; transition: transform 0.38s cubic-bezier(0.5, 0, 0.3, 1.35); pointer-events: none; }
+      .lever.pulled { transform: scaleY(-1); }
       .machine-pane .chart:not(.timeline) { flex: none; height: var(--chart, 200px); }
       .machine {
         display: block; width: 100%; max-width: 22rem; margin: 0 auto; padding: 0.5rem; border-radius: 13px;

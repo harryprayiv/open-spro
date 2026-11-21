@@ -48,7 +48,7 @@ import Data.Foldable (foldl)
 import Data.Int (ceil, toNumber)
 import Data.Number (abs)
 import Data.Array.NonEmpty as NEA
-import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Sim.Advice (advise)
 import Sim.Backend (SimCommand(..), SimView)
 import Sim.Backend as Backend
@@ -358,7 +358,28 @@ tick ms st =
     heard = foldl (flip hear) st { clock = clock, backend = passed.backend } passed.heard
     waited = Machine.expire clock heard.machine
   in
-    foldl lose heard { machine = waited.machine } waited.lost
+    forecastReady (foldl lose heard { machine = waited.machine } waited.lost)
+
+-- | Keep the time at which a heating machine will be ready. It is
+-- | worked out when the machine is first seen heating, and again if
+-- | that time comes and goes with the machine still heating, which
+-- | happens when something has changed under it: the water cut off, a
+-- | shot pulled, a parameter moved. It is not asked for more than once
+-- | in ten seconds, because finding it is slow.
+forecastReady :: State -> State
+forecastReady st = case st.machine.status.state, st.warming of
+  Ready, _ | not st.settled -> forecastReady st { settled = true }
+  Heating, Nothing -> again unit
+  Heating, Just known
+    | st.clock - known.askedAt >= 10000.0 && maybe true (_ <= st.machine.at) known.at -> again unit
+    | otherwise -> st
+  _, Nothing -> st
+  _, Just _ -> st { warming = Nothing }
+  where
+  -- A function, so that the slow forecast is made only in the branches
+  -- that ask for it and not on every call.
+  again :: Unit -> State
+  again _ = st { warming = Just { askedAt: st.clock, at: Backend.readyAt st.backend } }
 
 -- | Take in one message from the machine. This is all a backend has to
 -- | deliver, whether it is the simulated one or a real link.
@@ -428,7 +449,7 @@ skipWarmUp st = case st.machine.status.state of
 reset :: State -> State
 reset st =
   applyRecipe st.recipe
-    (sim (Reset st.params) st { machine = Machine.fresh (toProfile (allShapes st) st.recipe), notice = "" })
+    (sim (Reset st.params) st { machine = Machine.fresh (toProfile (allShapes st) st.recipe), notice = "", settled = false, warming = Nothing })
 
 ------------------------------------------------------------
 -- The timeline and the fader

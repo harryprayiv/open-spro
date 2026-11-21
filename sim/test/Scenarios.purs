@@ -10,7 +10,7 @@ import Data.Array.NonEmpty (fromArray, head, toArray)
 import Data.Either (Either(..), isLeft, isRight)
 import Data.Foldable (all, and, foldl, for_, maximum)
 import Data.Int (toNumber)
-import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, isNothing, maybe)
 import Data.Number (abs)
 import Data.Number.Format (fixed, toStringWith)
 import Data.String (Pattern(..), contains, joinWith)
@@ -811,6 +811,16 @@ link = do
   let turned = wait 3000.0 (asks (FaderModeSelected OnPressure) timed)
   expect "the shot ends and the fader goes back to rest" (turned.machine.status.fader < 0.01 && turned.machine.status.faderMode == OnPressure)
   expect "the selector broke no invariant" ((Backend.view turned.backend).violations == [])
+
+  -- The time a heating machine has to go, which the display shows.
+  let asleep = wait 1000.0 (tells (Reset Params.defaults) turned)
+  let cold = wait 1000.0 (asks (WakeRequested Full) asleep)
+  let promised = Backend.readyAt cold.backend
+  let arrived = pass 2400000.0 (\p -> p.machine.status.state == Ready) (tells (SetSpeed 60) cold)
+  log ("  a cold machine is promised ready at " <> n1 (fromMaybe 0.0 promised / 60.0) <> " min and is heard ready at " <> n1 (arrived.machine.at / 60.0) <> " min")
+  expect "a heating machine is ready when the forecast said it would be, to within what the link adds"
+    (cold.machine.status.state == Heating && maybe false (\at -> abs (at - arrived.machine.at) < 3.0) promised)
+  expect "a machine that is asleep has no such forecast" (isNothing (Backend.readyAt asleep.backend))
 
   -- The same run gives the same messages.
   let rerun = pass 90000.0 (\p -> length p.machine.history == 1) (wait 5000.0 (asks ShotRequested ready))

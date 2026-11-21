@@ -28,6 +28,7 @@ import Sim.Backend as Backend
 import Sim.Machine as Machine
 import Sim.Layout (BenchTab(..), Edge(..), Tab(..), benchTabs, benchTitle, defaultSizes, defaultView, tabTitle, tabs)
 import Sim.Layout as Layout
+import Sim.Palette as Palette
 import Sim.Forecast (forecast)
 import Sim.Model (Action(..), State, Theme(..))
 import Sim.Params (Group(..))
@@ -94,6 +95,8 @@ component =
         , locks: defaultLocks
         , sizes: defaultSizes
         , drag: Nothing
+        , warming: Nothing
+        , settled: false
         , phone: 1
         , forecast: forecast Params.defaults (toProfile (NEA.toArray Profiles.all) defaultRecipe) (puckOf defaultRecipe)
         , advice: Nothing
@@ -251,7 +254,9 @@ render st =
       Nothing -> ""
     count = length wrong.lines
   in
-    HH.div [ cls ("page " <> (if night then "theme-night" else "theme-day")) ]
+    -- The colours come from Sim.Palette, as variables the stylesheet
+    -- reads.
+    HH.div [ cls ("page " <> (if night then "theme-night" else "theme-day")), HP.style (Palette.cssVariables st.theme) ]
       [ HH.div [ cls "top" ]
           [ HH.h1 [ cls "plate" ] [ HH.text "Espresso simulator" ]
           , HH.span [ cls ("chip state-" <> show c.state) ] [ HH.text (show c.state) ]

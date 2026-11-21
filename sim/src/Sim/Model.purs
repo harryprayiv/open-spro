@@ -49,6 +49,14 @@ type State =
   -- scale the selector has chosen, it has been dragged to. The page shows this at once and the
   -- machine's own report of the fader catches up.
   , hand :: Maybe Number
+  -- While the machine heats: when, on the machine's clock, it will be
+  -- ready, and when on the page's clock that was worked out. `at` is
+  -- Nothing if it would not be ready within the hour.
+  , warming :: Maybe { askedAt :: Number, at :: Maybe Number }
+  -- The machine has been ready at least once since it was last reset.
+  -- From then on a spell of heating, as after a change of profile or
+  -- beans, does not take over the machine's display.
+  , settled :: Boolean
   -- This drag of the fader has already asked for a shot to start.
   , pulled :: Boolean
   -- Flips each time the fader is let go, so the slider is drawn afresh

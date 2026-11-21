@@ -71,6 +71,7 @@ machineView st wrong =
             , groupHeaterOn: c.act.groupHeaterOn
             , pouring: isJust c.shot && s.cupGrams > 0.05 && s.brewBar > 0.3
             , steaming: sim.dist.steamValveOpen && s.steamBar > 0.2
+            , steamOpen: sim.dist.steamValveOpen
             , fader: (faderReading st - scale.low) / (scale.high - scale.low)
             , mode: c.faderMode
             , faderValue: case c.faderMode of

@@ -170,6 +170,11 @@
               cp imgs/textures/bushedAlum.png $out/imgs/textures/
               cp imgs/textures/woodPanel01.png $out/imgs/textures/
               cp imgs/textures/brutalistTexture.png $out/imgs/textures/
+              # The frames of the display's character, if any have been
+              # drawn (Sim.Mascot).
+              if [ -d imgs/screen ]; then
+                cp -r imgs/screen $out/imgs/
+              fi
               printf '%s\n' \
                 '<!DOCTYPE html>' \
                 '<meta charset="utf-8">' \

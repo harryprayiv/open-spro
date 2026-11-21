@@ -22,14 +22,16 @@ import Data.Int as Int
 import Data.Maybe (fromMaybe)
 import Data.Number (pow)
 import Data.String (drop, length, take)
+import Sim.Palette (scheme)
 
--- | The cool end: the sage of the press packet, taken towards cyan.
+-- | The cool end: the sage of the press packet, taken towards cyan. It
+-- | is the one colour here that is not in the palette as it stands.
 cool :: String
 cool = "#86c9c3"
 
--- | The warm end: the packet's orange.
+-- | The warm end: the palette's orange.
 warm :: String
-warm = "#e88a22"
+warm = scheme.orange
 
 -- | The colour this far from cool (0) to warm (1).
 coolToWarm :: Number -> String

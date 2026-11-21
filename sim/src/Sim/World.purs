@@ -15,6 +15,7 @@ module Sim.World
   , send
   , sensors
   , warmUp
+  , readyIn
   ) where
 
 import Prelude
@@ -22,7 +23,8 @@ import Prelude
 import Data.Array (length, nub, snoc)
 import Data.Array.NonEmpty as NEA
 import Data.Either (Either)
-import Data.Maybe (fromMaybe, maybe)
+import Data.Int (toNumber)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Sim.Controller (Ctl, Event(..), handle, initialCtl, shotInProgress, tick)
 import Sim.Controller as Controller
 import Sim.Invariants (violated)
@@ -31,7 +33,7 @@ import Sim.Params (Params)
 import Sim.Params as Params
 import Sim.Plant (Disturbance, Plant, Puck, freshPuck, initialPlant, noDisturbance, readSensors, stepPlant, warmPlant)
 import Sim.Profiles as Profiles
-import Sim.Types (Sensors)
+import Sim.Types (MachineState(..), Sensors)
 
 type World =
   { now :: Number
@@ -134,6 +136,26 @@ send event w = do
         , lastSampleAt = w.now
         }
     _ -> w { ctl = ctl }
+
+-- | How many seconds a heating machine has to go before it reports
+-- | ready, if it is left alone: found by running a copy of this world
+-- | forward until it does. Nothing for a machine that is not heating,
+-- | and for one that would not be ready within the hour.
+-- |
+-- | Only a simulation can know this. A real machine would have to
+-- | estimate it.
+readyIn :: World -> Maybe Number
+readyIn start =
+  let
+    most = 144000
+    go :: Int -> World -> Maybe Number
+    go steps w
+      | w.ctl.state == Ready = Just (toNumber steps * dt)
+      | w.ctl.state /= Heating = Nothing
+      | steps >= most = Nothing
+      | otherwise = go (steps + 1) (stepWorld w)
+  in
+    if start.ctl.state == Heating then go 0 start else Nothing
 
 -- | Skip the warm-up: put the plant at operating temperature.
 warmUp :: World -> World

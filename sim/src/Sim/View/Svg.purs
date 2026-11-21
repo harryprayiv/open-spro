@@ -16,6 +16,7 @@ module Sim.View.Svg
   , fitted
   , sheen
   , glow
+  , picture
   , falling
   ) where
 
@@ -131,3 +132,15 @@ falling name colour top bottom =
     [ node "stop" [ at "offset" "0", at "stop-color" colour, at "stop-opacity" (num top) ] []
     , node "stop" [ at "offset" "1", at "stop-color" colour, at "stop-opacity" (num bottom) ] []
     ]
+
+-- | An image fitted inside a rectangle without being stretched, and
+-- | centred in it.
+picture :: forall w i. String -> Number -> Number -> Number -> Number -> Array Attr -> HH.HTML w i
+picture file x y w h attrs =
+  node "image"
+    ( [ at "href" file, at "x" (num x), at "y" (num y), at "width" (num w), at "height" (num h)
+      , at "preserveAspectRatio" "xMidYMid meet"
+      ]
+        <> attrs
+    )
+    []
