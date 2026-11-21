@@ -103,8 +103,6 @@ data Edge
   | FrontEdge
   -- under the two drawings
   | DrawingsEdge
-  -- under the timeline
-  | TimelineEdge
   -- under the chart
   | ChartEdge
 
@@ -112,7 +110,7 @@ derive instance eqEdge :: Eq Edge
 
 -- | The sizes the edges set, in pixels: the widths of the controls
 -- | pane, the bench pane and the front drawing, and the heights of the
--- | row of drawings, the timeline and the chart. The machine pane takes
+-- | row of drawings and the chart. The machine pane takes
 -- | the width the others leave, and the inside drawing takes what the
 -- | front leaves.
 type Sizes =
@@ -120,12 +118,11 @@ type Sizes =
   , bench :: Number
   , front :: Number
   , drawings :: Number
-  , timeline :: Number
   , chart :: Number
   }
 
 defaultSizes :: Sizes
-defaultSizes = { controls: 560.0, bench: 420.0, front: 300.0, drawings: 350.0, timeline: 64.0, chart: 200.0 }
+defaultSizes = { controls: 560.0, bench: 420.0, front: 300.0, drawings: 350.0, chart: 200.0 }
 
 -- | Whether the edge stands upright, and so is dragged from side to
 -- | side. The others lie flat and are dragged up and down.
@@ -135,7 +132,6 @@ upright = case _ of
   BenchEdge -> true
   FrontEdge -> true
   DrawingsEdge -> false
-  TimelineEdge -> false
   ChartEdge -> false
 
 -- | No size is let go so small that its edge is lost, or so large that
@@ -146,7 +142,6 @@ held s =
   , bench: clamp 260.0 1200.0 s.bench
   , front: clamp 120.0 1200.0 s.front
   , drawings: clamp 120.0 1600.0 s.drawings
-  , timeline: clamp 36.0 600.0 s.timeline
   , chart: clamp 60.0 1600.0 s.chart
   }
 
@@ -158,7 +153,6 @@ dragEdge edge dx dy s = held case edge of
   BenchEdge -> s { bench = s.bench - dx }
   FrontEdge -> s { front = s.front + dx }
   DrawingsEdge -> s { drawings = s.drawings + dy }
-  TimelineEdge -> s { timeline = s.timeline + dy }
   ChartEdge -> s { chart = s.chart + dy }
 
 -- | The sizes as CSS variables. The stylesheet uses them on a wide
@@ -170,13 +164,12 @@ sizeStyle s =
     , "--bench: " <> show s.bench <> "px"
     , "--front: " <> show s.front <> "px"
     , "--drawings: " <> show s.drawings <> "px"
-    , "--timeline: " <> show s.timeline <> "px"
     , "--chart: " <> show s.chart <> "px"
     ]
 
--- | Six numbers separated by commas, in the order of the record.
+-- | Five numbers separated by commas, in the order of the record.
 encodeSizes :: Sizes -> String
-encodeSizes s = joinWith "," (map show [ s.controls, s.bench, s.front, s.drawings, s.timeline, s.chart ])
+encodeSizes s = joinWith "," (map show [ s.controls, s.bench, s.front, s.drawings, s.chart ])
 
 -- | A size that is missing or unreadable falls back to its default, so
 -- | what an older page stored (the first two numbers) still reads.
@@ -193,8 +186,7 @@ decodeSizes text =
       , bench: at 1 d.bench
       , front: at 2 d.front
       , drawings: at 3 d.drawings
-      , timeline: at 4 d.timeline
-      , chart: at 5 d.chart
+      , chart: at 4 d.chart
       }
 
 readNumber :: String -> Maybe Number

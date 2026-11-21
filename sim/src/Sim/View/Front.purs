@@ -1,22 +1,26 @@
 -- | The machine seen from the front, drawn plainly: a brushed steel
--- | face under a band of charred cedar, one dial for both pressures, a
--- | window for the value the fader is at, three small temperature
--- | readouts, heater lamps, the fader with its selector drum, the group
+-- | face under a band of charred cedar, one dial for both pressures, an
+-- | e-ink display of the shot, three small temperature
+-- | readouts, heater lamps, the fader with its selector drum and a
+-- | window for the value it is at, the group
 -- | with its portafilter in front of a concrete backsplash, the cup on
 -- | the scale and the steam wand on its turret. Steel, cedar, wood and
 -- | concrete come from the images in sim/imgs/textures; every textured
 -- | shape has a flat colour beneath it in case an image is missing.
 module Sim.View.Front
   ( FrontInput
+  , Ink
   , front
   ) where
 
 import Prelude
 
-import Data.Array (range)
+import Data.Array (concat, mapWithIndex, range)
 import Data.Int (toNumber)
+import Data.Maybe (Maybe(..))
 import Data.Number (cos, floor, pi, sin)
-import Data.String (toLower)
+import Data.Number.Format (fixed, toStringWith)
+import Data.String (joinWith, toLower)
 import Halogen.HTML as HH
 import Halogen.HTML.Core (AttrName(..), ElemName(..), Namespace(..))
 import Halogen.HTML.Events as HE
@@ -24,7 +28,7 @@ import Halogen.HTML.Properties as HP
 import Sim.Link (Event(..), FaderMode(..), faderWord, nextFaderMode)
 import Sim.Model (Action(..))
 import Sim.Types (MachineState(..))
-import Sim.View.Svg (Attr, at, circle, defs, fitted, g, label, line, num, path, rect, svg, texture)
+import Sim.View.Svg (Attr, at, circle, defs, fitted, g, label, line, num, path, polyline, rect, svg, texture)
 
 type FrontInput =
   { now :: Number
@@ -48,6 +52,8 @@ type FrontInput =
   , mode :: FaderMode
   -- The value the fader is at, written out with its unit.
   , faderValue :: String
+  -- What the e-ink display shows.
+  , ink :: Ink
   , running :: Boolean
   , manual :: Boolean
   -- Something on the page's problem list is active.
@@ -55,6 +61,24 @@ type FrontInput =
   , flowMlPerS :: Number
   -- The colour of the coffee leaving the basket.
   , streamColour :: String
+  }
+
+-- | The shot as the e-ink display shows it. Times are in seconds from
+-- | the start of the shot and pressures in bar.
+type Ink =
+  -- how much time the display is wide, and how far the shot has run
+  { span :: Number
+  , place :: Number
+  , running :: Boolean
+  -- the profile's steps, and which of them the shot is in
+  , bands :: Array { start :: Number, end :: Number }
+  , step :: Maybe Int
+  -- the pressure the profile will ask for, and the pressure asked for
+  -- so far
+  , target :: Array { t :: Number, bar :: Number }
+  , drawn :: Array { t :: Number, bar :: Number }
+  -- the limits the fader is held to while the pressure is set by hand
+  , limits :: Maybe { low :: Number, high :: Number }
   }
 
 bad :: String
@@ -220,20 +244,96 @@ readout y title value =
         value
     ]
 
--- | The window in the middle: what the fader stands for, and the value
--- | it is at. On time, where the fader cannot be moved, the word is
--- | red.
+-- | The e-ink display: the shot as a timeline, in greys. Each step of
+-- | the profile is a band, the step the shot is in is the darkest, the
+-- | pressure the profile will ask for is a dashed line and the
+-- | pressure asked for so far is a solid black one. An upright line
+-- | marks how far the shot has run. E-ink has no colour and holds its
+-- | picture with the power off.
+inkDisplay :: forall w i. Ink -> HH.HTML w i
+inkDisplay page =
+  let
+    left = 177.0
+    top = 93.0
+    width = 91.0
+    height = 52.0
+    span = max 1.0 page.span
+    x t = left + clamp 0.0 1.0 (t / span) * width
+    y bar = top + height - clamp 0.0 12.0 bar / 12.0 * (height - 9.0)
+    shade i
+      | page.step == Just i = "#a9aaa4"
+      | i `mod` 2 == 0 = "#d6d7d0"
+      | otherwise = "#c4c5be"
+    band i seg =
+      [ rect
+          [ at "x" (num (x seg.start)), at "y" (num top)
+          , at "width" (num (max 0.0 (x seg.end - x seg.start))), at "height" (num height)
+          , at "fill" (shade i)
+          ]
+      , label
+          [ at "x" (num (x seg.start + 2.0)), at "y" (num (top + 6.5)), at "font-size" "5"
+          , at "font-family" sans, at "fill" "#55564f"
+          ]
+          (show (i + 1))
+      ]
+    points samples = joinWith " " (map (\s -> num (x s.t) <> "," <> num (y s.bar)) samples)
+    limit bar =
+      line
+        [ at "x1" (num left), at "x2" (num (left + width)), at "y1" (num (y bar)), at "y2" (num (y bar))
+        , at "stroke" "#55564f", at "stroke-width" "0.6", at "stroke-dasharray" "1 2"
+        ]
+    limits = case page.limits of
+      Just held -> [ limit held.low, limit held.high ]
+      Nothing -> []
+    playLine =
+      if page.running then
+        [ line
+            [ at "x1" (num (x page.place)), at "x2" (num (x page.place)), at "y1" (num top), at "y2" (num (top + height))
+            , at "stroke" "#1c1c1a", at "stroke-width" "0.9"
+            ]
+        ]
+      else []
+  in
+    g []
+      ( [ rect [ at "x" "172", at "y" "88", at "width" "101", at "height" "62", at "rx" "3", at "fill" window ]
+        , rect [ at "x" (num left), at "y" (num top), at "width" (num width), at "height" (num height), at "fill" "#e3e4dd" ]
+        ]
+          <> concat (mapWithIndex band page.bands)
+          <> limits
+          <>
+            [ polyline
+                [ at "fill" "none", at "points" (points page.target)
+                , at "stroke" "#6f706a", at "stroke-width" "0.9", at "stroke-dasharray" "2 1.5"
+                ]
+            , polyline
+                [ at "fill" "none", at "points" (points page.drawn)
+                , at "stroke" "#1c1c1a", at "stroke-width" "1.4", at "stroke-linejoin" "round"
+                ]
+            ]
+          <> playLine
+          <>
+            [ label
+                [ at "x" (num (left + width - 2.0)), at "y" (num (top + height - 2.5)), at "text-anchor" "end"
+                , at "font-size" "5.5", at "font-family" sans, at "fill" "#1c1c1a"
+                ]
+                (toStringWith (fixed 0) (if page.running then page.place else span) <> " s")
+            ]
+      )
+
+-- | The window over the middle of the fader: what the fader stands
+-- | for, and the value it is at. On time, where the fader cannot be
+-- | moved, the word is red.
 faderWindow :: forall w i. FaderMode -> String -> HH.HTML w i
 faderWindow mode value =
   g []
-    [ rect [ at "x" "192", at "y" "96", at "width" "76", at "height" "46", at "rx" "3", at "fill" window ]
+    [ rect [ at "x" "146", at "y" "200", at "width" "108", at "height" "28", at "rx" "2", at "fill" window ]
     , label
-        [ at "x" "200", at "y" "109", at "font-size" "6", at "font-family" sans
+        [ at "x" "153", at "y" "217.5", at "font-size" "6", at "font-family" sans
         , at "letter-spacing" "0.5", at "fill" (if mode == OnTime then "#ff4d3d" else "#9aa0a6")
         ]
         (toLower (faderWord mode))
     , label
-        [ at "x" "261", at "y" "133", at "text-anchor" "end"
+        [ at "x" "248", at "y" "220", at "text-anchor" "end"
         , at "font-size" "15", at "font-family" "monospace", at "fill" paper
         ]
         value
@@ -399,6 +499,7 @@ front v =
                 , at "letter-spacing" "0.5", fill ink
                 ]
                 (stateText v.state)
+            , inkDisplay v.ink
             , faderWindow v.mode v.faderValue
             -- the three temperatures, one over the other
             , readout 96.0 "reservoir" (num v.reservoirC)

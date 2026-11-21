@@ -27,7 +27,7 @@ import Sim.Update (allShapes, applyRecipe, chooseRoast, chooseShape, fieldKey, f
 import Sim.View.Bench (adviceLine, forecastLine)
 import Sim.View.Chart (chart)
 import Sim.View.Front (front)
-import Sim.View.Playhead (playhead)
+import Sim.View.Playhead (inkOf, playhead)
 import Sim.View.Inside (inside)
 import Sim.View.Wheel (wheel)
 import Sim.View.Widgets (button, chosen, cls, clock, legend, n1, n2, numBox, primary, row, rowIf, section, segmented, slider, table, toggle)
@@ -76,6 +76,7 @@ machineView st wrong =
                 OnPressure -> n1 (faderReading st) <> " bar"
                 OnTemperature -> n1 (faderReading st) <> " C"
                 OnTime -> n1 (playheadAt st) <> " s"
+            , ink: inkOf st
             , running: isJust c.shot
             , manual: held
             , problem: anyProblem wrong
@@ -121,7 +122,6 @@ machineView st wrong =
         ]
     , edge DrawingsEdge
     , playhead st
-    , edge TimelineEdge
     , HH.p [ cls "shot-line" ] [ HH.text (shotLine m) ]
     , chart m.trace
     , edge ChartEdge
