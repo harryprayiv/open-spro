@@ -320,20 +320,15 @@ inkDisplay page =
             ]
       )
 
--- | The window over the middle of the fader: what the fader stands
--- | for, and the value it is at. On time, where the fader cannot be
--- | moved, the word is red.
-faderWindow :: forall w i. FaderMode -> String -> HH.HTML w i
-faderWindow mode value =
+-- | The window over the middle of the fader: the value the fader is
+-- | at. What the value is a value of is in the selector's window beside
+-- | it.
+faderWindow :: forall w i. String -> HH.HTML w i
+faderWindow value =
   g []
-    [ rect [ at "x" "146", at "y" "200", at "width" "108", at "height" "28", at "rx" "2", at "fill" window ]
+    [ rect [ at "x" "154", at "y" "200", at "width" "92", at "height" "28", at "rx" "2", at "fill" window ]
     , label
-        [ at "x" "153", at "y" "217.5", at "font-size" "6", at "font-family" sans
-        , at "letter-spacing" "0.5", at "fill" (if mode == OnTime then "#ff4d3d" else "#9aa0a6")
-        ]
-        (toLower (faderWord mode))
-    , label
-        [ at "x" "248", at "y" "220", at "text-anchor" "end"
+        [ at "x" "200", at "y" "220", at "text-anchor" "middle"
         , at "font-size" "15", at "font-family" "monospace", at "fill" paper
         ]
         value
@@ -500,7 +495,7 @@ front v =
                 ]
                 (stateText v.state)
             , inkDisplay v.ink
-            , faderWindow v.mode v.faderValue
+            , faderWindow v.faderValue
             -- the three temperatures, one over the other
             , readout 96.0 "reservoir" (num v.reservoirC)
             , readout 119.0 "group" (num v.groupC)

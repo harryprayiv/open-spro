@@ -2,6 +2,11 @@
 # Pages site. The page is static: the controller core is already inside
 # the bundle as wasm, so nothing runs on a server.
 #
+# The whole build is `nix build .#demo`: the same command, with the
+# same pinned inputs, that builds the site on any machine. This file
+# only fetches the repository, installs Nix and hands the result to
+# GitHub Pages.
+#
 # Before the first run, set Settings > Pages > Source to "GitHub
 # Actions" in the repository.
 name: demo
@@ -35,36 +40,17 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The scenarios run first, so a simulator that fails them is not
-      # published.
-      - name: Test
-        working-directory: sim
-        run: nix develop ..#code --command spago test
+      # The scenarios run inside this build, so a simulator that fails
+      # them is not published.
+      - name: Build the site
+        run: nix build .#demo --print-build-logs
 
-      - name: Bundle
-        working-directory: sim
-        run: nix develop ..#code --command spago bundle
-
-      # The page is sim/dev/index.html. It loads app.js from beside
-      # itself and its textures from ../imgs/textures, so the site keeps
-      # those two folders side by side. The front page sends a visitor
-      # on to dev/.
-      - name: Lay out the site
+      # The result is a link into the Nix store, where nothing can be
+      # written. Pages wants plain files it owns.
+      - name: Copy the site out of the store
         run: |
-          mkdir -p _site/dev _site/imgs/textures
-          cp sim/dev/index.html sim/dev/app.js _site/dev/
-          cp sim/imgs/textures/sugsugiBan.png _site/imgs/textures/
-          cp sim/imgs/textures/brutalistWall.png _site/imgs/textures/
-          cp sim/imgs/textures/bushedAlum.png _site/imgs/textures/
-          cp sim/imgs/textures/woodPanel01.png _site/imgs/textures/
-          cp sim/imgs/textures/brutalistTexture.png _site/imgs/textures/
-          printf '%s\n' \
-            '<!DOCTYPE html>' \
-            '<meta charset="utf-8">' \
-            '<title>Open-Spro simulator</title>' \
-            '<meta http-equiv="refresh" content="0; url=dev/">' \
-            '<a href="dev/">Open the simulator</a>' \
-            > _site/index.html
+          cp -rL result _site
+          chmod -R u+w _site
 
       - uses: actions/upload-pages-artifact@v5
         with:
@@ -81,4 +67,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
